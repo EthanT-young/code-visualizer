@@ -21,15 +21,16 @@ Step through Java, C++ or Python code line by line and watch the data change. Bu
 
 Java and C++ need the server. Python works even if the server is down.
 
-## Run it locally
+## Run it on your computer
 
 ```bash
-docker build -t code-visualizer .
-docker run --rm -p 8080:8080 code-visualizer
+docker compose -f compose.local.yml up -d --build
 # open http://localhost:8080
 ```
 
-This quick mode uses normal Docker networking. Use the compose setup below when hosting it publicly.
+You only run this once. It keeps running in the background and starts again on its own when Docker starts (including after a reboot). To stop it for good: `docker compose -f compose.local.yml down`. After changing the code, run the `up` command again.
+
+The local version has the same lockdown as the hosted one, but it needs a network for its port, which is only reachable from your computer. Use the compose setup below when hosting it publicly.
 
 ## Host it behind Caddy
 

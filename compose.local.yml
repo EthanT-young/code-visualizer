@@ -1,0 +1,25 @@
+# Run on this computer at http://localhost:8080, restarting automatically.
+#   docker compose -f compose.local.yml up -d --build
+# For hosting behind Caddy, use docker-compose.yml instead.
+services:
+  code-visualizer-local:
+    build: .
+    container_name: code-visualizer-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"   # only reachable from this computer
+    environment:
+      LISTEN: "8080"
+      MAX_JOBS: "2"
+
+    # Same lockdown as docker-compose.yml, except it needs a network for the port.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,exec,mode=1777
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 512
+    cpus: 2
