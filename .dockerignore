@@ -1,0 +1,6 @@
+socket
+.git
+**/__pycache__
+**/*.gch
+**/classes
+.env

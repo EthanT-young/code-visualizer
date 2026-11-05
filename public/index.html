@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Visualizer</title>
+  <meta name="description" content="Step through Java, C++ or Python code and watch arrays, pointers, hash maps, linked lists, trees and the call stack change line by line.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+  <script src="examples.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="title">
+      <h1>Code Visualizer</h1>
+      <div class="langs" role="radiogroup" aria-label="Language">
+        <button type="button" role="radio" data-lang="java" aria-checked="true">Java</button>
+        <button type="button" role="radio" data-lang="cpp" aria-checked="false">C++</button>
+        <button type="button" role="radio" data-lang="python" aria-checked="false">Python</button>
+      </div>
+    </div>
+    <div class="bar-actions">
+      <label class="sr-only" for="examples">Load an example</label>
+      <select id="examples"><option value="">Load an example…</option></select>
+      <label class="toggle"><input type="checkbox" id="autorun" checked> Run as I type</label>
+      <button type="button" id="run" class="primary">Run</button>
+      <button type="button" id="share">Copy link</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="code-side" aria-label="Code">
+      <div class="editor"><textarea id="code" aria-label="Code"></textarea></div>
+      <details class="stdin-box" id="stdin-box">
+        <summary>Program input</summary>
+        <textarea id="stdin" rows="4" spellcheck="false" placeholder="Text your program reads with Scanner, cin or input(), like HackerRank's stdin"></textarea>
+      </details>
+      <div class="console">
+        <h2>Output</h2>
+        <pre id="stdout"></pre>
+      </div>
+    </section>
+
+    <section class="viz-side" aria-label="Visualization">
+      <div class="controls" role="toolbar" aria-label="Step controls">
+        <button type="button" id="first" title="First step (Home)" aria-label="First step">⏮</button>
+        <button type="button" id="prev" title="Previous step (←)">‹ Back</button>
+        <button type="button" id="play" class="play" title="Play / pause (Space)">Play</button>
+        <button type="button" id="next" title="Next step (→)">Next ›</button>
+        <button type="button" id="last" title="Last step (End)" aria-label="Last step">⏭</button>
+        <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Step">
+        <span id="counter" class="counter">0 / 0</span>
+        <label class="sr-only" for="speed">Playback speed</label>
+        <select id="speed">
+          <option value="1200">Slow</option>
+          <option value="600" selected>Normal</option>
+          <option value="250">Fast</option>
+          <option value="60">Very fast</option>
+        </select>
+      </div>
+      <p id="status" class="status" role="status">Getting ready…</p>
+      <div class="viz">
+        <div class="stack-col">
+          <h2>Call stack</h2>
+          <div id="frames"></div>
+        </div>
+        <div class="data-col">
+          <h2>Data</h2>
+          <div id="objects"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

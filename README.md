@@ -1,0 +1,100 @@
+# Code Visualizer
+
+Step through Java, C++ or Python code line by line and watch the data change. Built for explaining LeetCode and HackerRank solutions.
+
+- Arrays and strings, with index pointers (`i`, `j`, `left`, `right`, `lo`, `hi`, `mid`, `slow`, `fast`…) drawn above the cells
+- 2D grids, with the cell at `(r, c)`, `(row, col)` or `(i, j)` outlined
+- Hash maps, sets, stacks, queues, deques and priority queues
+- Linked lists and binary trees, labeled with the variables that point at each node
+- The call stack, so recursion is visible frame by frame, plus return values
+- The line about to run is highlighted, and anything that just changed is marked in yellow
+- Program input for HackerRank-style problems that read `Scanner` / `cin` / `input()`
+- "Run as I type", playback speeds, keyboard stepping (← → Home End Space), and shareable links that hold the code
+
+## How it runs
+
+| Language | Where it runs | How it's traced |
+| --- | --- | --- |
+| Java | Server (Docker) | The JVM's debugger interface (JDI), Java 21 |
+| C++ | Server (Docker) | GDB with the libstdc++ pretty printers, g++ C++20 |
+| Python | Your browser | Pyodide (CPython compiled to WebAssembly) with `sys.settrace` |
+
+Java and C++ need the server. Python works even if the server is down.
+
+## Run it locally
+
+```bash
+docker build -t code-visualizer .
+docker run --rm -p 8080:8080 code-visualizer
+# open http://localhost:8080
+```
+
+This quick mode uses normal Docker networking. Use the compose setup below when hosting it publicly.
+
+## Host it behind Caddy
+
+The compose file runs the container with **no network at all**, so code that visitors run can't reach the internet or your home network. Caddy talks to it through a Unix socket.
+
+```bash
+mkdir -p socket
+docker compose up -d --build
+```
+
+**Caddy installed on the host:**
+
+```
+code.yourdomain.com {
+    reverse_proxy unix//absolute/path/to/code-visualizer/socket/codeviz.sock
+}
+```
+
+**Caddy in Docker:** mount the same folder into the Caddy container (for example `- /absolute/path/to/code-visualizer/socket:/codeviz`) and use `reverse_proxy unix//codeviz/codeviz.sock`.
+
+To host it under a path on an existing site instead of a subdomain:
+
+```
+redir /visualizer /visualizer/
+handle_path /visualizer/* {
+    reverse_proxy unix//absolute/path/to/code-visualizer/socket/codeviz.sock
+}
+```
+
+### Password (optional)
+
+Anyone who can open the page can run Java and C++ code on your server, inside the limits below. To keep it private, put `ACCESS_PASSWORD=something-long` in a `.env` file next to `docker-compose.yml`. The browser then asks for it; any username works.
+
+### Limits and isolation
+
+- No network and a read-only filesystem for the whole container
+- Programs run as an unprivileged user (`runner`, uid 10001) with no Linux capabilities, so they can't signal or modify the server. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
+- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 programs traced at a time, each limited to 300 processes and 20 MB files
+- Each run: 10 seconds of program time, 3,000 steps, 100 KB of output, 50 KB of code. Programs that run longer are stopped, and the steps recorded so far are still shown.
+- Everything a program starts is killed when its run ends, including fork bombs and processes that try to detach; `tini` cleans up the rest
+- Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`: the server stayed up for all of them
+
+## Writing code for it
+
+**Java.** Include a `main` method that calls your solution (see the examples). `java.util.*`, `java.util.function.*` and `java.util.stream.*` are imported for you. `ListNode` and `TreeNode` are provided like on LeetCode, with `ListNode.of(1, 2, 3)` and `TreeNode.of(3, 9, 20, null, null, 15, 7)` to build test input. Define your own and they're left out.
+
+**C++.** `<bits/stdc++.h>` and `using namespace std` are included, like on LeetCode. `ListNode` and `TreeNode` are provided, with `buildList({1, 2, 3})` and `buildTree({3, 9, 20, null, null, 15, 7})`.
+
+**Python.** `List`, `Optional`, `deque`, `defaultdict`, `Counter`, `heapq`, `bisect` and `math` are preloaded. `ListNode`, `TreeNode`, `build_list([1, 2, 3])` and `build_tree([3, 9, 20, None, None, 15, 7])` are provided.
+
+**Pointers.** Integer variables named `i`, `j`, `k`, `l`, `r`, `lo`, `hi`, `low`, `high`, `mid`, `left`, `right`, `start`, `end`, `slow`, `fast`, `idx`, `ptr`, `pos`, `top`, `front`, `rear`, `p`, `q`, `cur`, `curr` (or ending in `_idx`, `_ptr`, `_left`…) are drawn as arrows into arrays and strings in the same function. Change `POINTER_RE` in `public/app.js` to add your own names.
+
+## Known limitations
+
+- A loop whose whole body sits on the same line as the loop itself (`while (true) { x++; }`) can't be stepped in Java or C++: debuggers advance by line, and the line never changes. It runs until the 10 second limit. Put the body on its own line.
+- Java and C++ don't step into library code (sorting, `HashMap` internals), so a comparator or lambda passed to a library call isn't stepped through in C++.
+- Containers show their first 80 items; each step shows up to 300 objects.
+- C++ pointers to plain values (like `int*`) show as addresses; pointers to structs and classes are followed.
+- The editor and fonts load from cdnjs and Google Fonts; Python loads from jsDelivr on first use (about 10 MB, cached afterwards).
+
+## Project layout
+
+```
+public/            the page (HTML, CSS, JS) and the Python tracer that runs in the browser
+server/server.py   web server: serves the page and runs Java/C++ traces
+server/java/       JDI tracer for Java
+server/cpp/        GDB tracer, LeetCode prelude headers
+```

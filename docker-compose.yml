@@ -1,0 +1,29 @@
+services:
+  code-visualizer:
+    build: .
+    container_name: code-visualizer
+    restart: unless-stopped
+
+    # Visitors' Java/C++ code runs in here, so lock it down:
+    network_mode: none          # no internet or LAN access; Caddy connects through the socket below
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,exec,mode=1777   # compiled programs run from here
+    cap_drop: [ALL]
+    # Just enough for the server to run programs as the separate `runner` user
+    # and clean up after them. Programs themselves get no capabilities.
+    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 512
+    cpus: 2
+
+    environment:
+      LISTEN: unix:/run/codeviz/codeviz.sock
+      # Optional: require a password for the whole site (any username works).
+      ACCESS_PASSWORD: ${ACCESS_PASSWORD:-}
+      MAX_JOBS: "2"
+    volumes:
+      # The socket appears at ./socket/codeviz.sock on the host for Caddy.
+      - ./socket:/run/codeviz

@@ -1,0 +1,10 @@
+# runtime
+socket/
+.env
+
+# build output
+**/__pycache__/
+*.gch
+server/java/classes/
+node_modules/
+dist/
