@@ -9,6 +9,7 @@ import { EXAMPLES, LANGUAGES } from './lib/examples.js';
 import { Runner } from './lib/runner.js';
 import { encodeShare, load, save, saveDraft, draftFor } from './lib/share.js';
 import { collectRefs, describeStep } from './lib/trace.js';
+import { applyTheme, onSystemThemeChange, resolveTheme } from './lib/themes.js';
 
 const AUTORUN_DELAY_MS = { python: 700, server: 1200 };
 
@@ -25,6 +26,20 @@ export default function App({ initial }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(null); // { text, kind } shown until the next trace arrives
   const [hovered, setHovered] = useState(null);
+  const [themeChoice, setThemeChoice] = useState(load('cv:theme') || 'system');
+  const [theme, setTheme] = useState(() => resolveTheme(load('cv:theme') || 'system'));
+
+  // Apply the theme, and follow the computer's light/dark setting when "Match system" is chosen.
+  useEffect(() => {
+    const update = () => {
+      const resolved = resolveTheme(themeChoice);
+      applyTheme(resolved);
+      setTheme(resolved);
+    };
+    update();
+    save('cv:theme', themeChoice);
+    return themeChoice === 'system' ? onSystemThemeChange(update) : undefined;
+  }, [themeChoice]);
 
   const editor = useRef(null);
   const consoleRef = useRef(null);
@@ -135,7 +150,7 @@ export default function App({ initial }) {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target.closest('.cm-editor, input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target.closest('.monaco-editor, input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
       const actions = {
         ArrowLeft: () => move(-1),
         ArrowRight: () => move(1),
@@ -194,6 +209,8 @@ export default function App({ initial }) {
       <Header
         lang={lang}
         busy={busy}
+        themeChoice={themeChoice}
+        onTheme={setThemeChoice}
         autorun={autorun}
         onLanguage={switchLanguage}
         onExample={(i) => loadCode(EXAMPLES[lang][i].code, EXAMPLES[lang][i].stdin)}
@@ -203,7 +220,7 @@ export default function App({ initial }) {
       />
       <main className="layout">
         <section className="code-side" aria-label="Code">
-          <CodeEditor ref={editor} initialCode={initial.code} lang={lang} marks={marks}
+          <CodeEditor ref={editor} initialCode={initial.code} lang={lang} theme={theme} marks={marks}
             onChange={scheduleAutorun} onRun={() => run({ reset: true })} />
           <details className="stdin-box" open={stdinOpen} onToggle={(e) => setStdinOpen(e.currentTarget.open)}>
             <summary>Program input</summary>

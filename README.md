@@ -10,6 +10,8 @@ Step through Java, C++ or Python code line by line and watch the data change. Bu
 - The line about to run is highlighted, and anything that just changed is marked in yellow
 - Program input for HackerRank-style problems that read `Scanner` / `cin` / `input()`
 - "Run as I type", playback speeds, keyboard stepping (← → Home End Space), and shareable links that hold the code
+- The editor is Monaco (the one VS Code and LeetCode use) with VS Code's Light+ / Dark+ syntax colors
+- Themes: VS Code Dark, VS Code Light, LeetCode Dark, plus the original Chalkboard and Whiteboard. "Match system" (the default) follows your computer's light/dark setting
 
 ## How it runs
 
@@ -96,8 +98,8 @@ Anyone who can open the page can run Java and C++ code on your server, inside th
 ```
 web/               the React site (Vite): editor, step controls and all the drawings
   src/App.jsx        page state: running code, stepping, keyboard shortcuts
-  src/components/    CodeEditor (CodeMirror 6), CallStack, DataPanel, Values, StepControls, Header
-  src/lib/           examples, trace helpers, the runner, share links
+  src/components/    CodeEditor (Monaco), CallStack, DataPanel, Values, StepControls, Header
+  src/lib/           examples, trace helpers, the runner, share links, themes, Monaco setup
   public/            the Python tracer and its Web Worker (run in the browser)
 server/server.py   web server: serves the built site and runs Java/C++ traces
 server/java/       JDI tracer for Java

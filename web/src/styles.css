@@ -1,15 +1,124 @@
-/* Whiteboard (light) and chalkboard (dark). The one loud element is the
-   highlighter: it marks the line about to run and anything that just changed. */
-:root {
+/* Themes. The page sets data-theme on <html> (see lib/themes.js); "Match system" picks
+   vscode-dark or vscode-light. Until then, these defaults follow the OS setting. */
+:root,
+[data-theme="vscode-light"] {
+  --paper: #f8f8f8;
+  --grid: transparent;
+  --panel: #ffffff;
+  --ink: #3b3b3b;
+  --ink-soft: #6e6e6e;
+  --rule: #e5e5e5;
+  --control-bg: #ffffff;
+  --control-border: #cecece;
+  --accent: #005fb8;
+  --accent-ink: #ffffff;
+  --hl: #fff2a8;            /* values that just changed */
+  --hl-ink: #3b3b3b;
+  --hl-line: rgba(255, 255, 102, 0.45);  /* line about to run (VS Code's debugger color) */
+  --hl-faint: rgba(255, 255, 102, 0.18); /* line that just ran */
+  --marker: #be8700;
+  --red: #e51400;
+  --red-faint: #fde7e9;
+  --green: #388a34;
+  --p0: #0066bf; --p1: #af00db; --p2: #267f99; --p3: #a31515; --p4: #795e26; --p5: #098658;
+  --syn-keyword: #0000ff;
+  --syn-def: #795e26;
+  --syn-string: #a31515;
+  --syn-number: #098658;
+  --syn-comment: #008000;
+  --syn-builtin: #267f99;
+  --font-ui: -apple-system, "Segoe UI", system-ui, Ubuntu, Roboto, sans-serif;
+  --font-code: Menlo, Monaco, Consolas, "Droid Sans Mono", "DejaVu Sans Mono", monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --paper: #181818; --grid: transparent; --panel: #1f1f1f; --ink: #cccccc; --ink-soft: #9d9d9d;
+    --rule: #2b2b2b; --control-bg: #313131; --control-border: #3c3c3c; --accent: #0078d4; --accent-ink: #ffffff;
+    --hl: rgba(255, 210, 0, 0.28); --hl-ink: #ffffff; --hl-line: rgba(255, 255, 0, 0.2); --hl-faint: rgba(255, 255, 0, 0.07);
+    --marker: #ffcc00; --red: #f48771; --red-faint: rgba(244, 135, 113, 0.15); --green: #89d185;
+    --p0: #3794ff; --p1: #d670d6; --p2: #4ec9b0; --p3: #ce9178; --p4: #c586c0; --p5: #dcdcaa;
+    --syn-keyword: #569cd6; --syn-def: #dcdcaa; --syn-string: #ce9178; --syn-number: #b5cea8; --syn-comment: #6a9955; --syn-builtin: #4ec9b0;
+    color-scheme: dark;
+  }
+}
+
+[data-theme="vscode-dark"] {
+  --paper: #181818;
+  --grid: transparent;
+  --panel: #1f1f1f;
+  --ink: #cccccc;
+  --ink-soft: #9d9d9d;
+  --rule: #2b2b2b;
+  --control-bg: #313131;
+  --control-border: #3c3c3c;
+  --accent: #0078d4;
+  --accent-ink: #ffffff;
+  --hl: rgba(255, 210, 0, 0.28);
+  --hl-ink: #ffffff;
+  --hl-line: rgba(255, 255, 0, 0.2);
+  --hl-faint: rgba(255, 255, 0, 0.07);
+  --marker: #ffcc00;
+  --red: #f48771;
+  --red-faint: rgba(244, 135, 113, 0.15);
+  --green: #89d185;
+  --p0: #3794ff; --p1: #d670d6; --p2: #4ec9b0; --p3: #ce9178; --p4: #c586c0; --p5: #dcdcaa;
+  --syn-keyword: #569cd6;
+  --syn-def: #dcdcaa;
+  --syn-string: #ce9178;
+  --syn-number: #b5cea8;
+  --syn-comment: #6a9955;
+  --syn-builtin: #4ec9b0;
+  color-scheme: dark;
+}
+
+[data-theme="leetcode-dark"] {
+  --paper: #1a1a1a;
+  --grid: transparent;
+  --panel: #262626;
+  --ink: #e6e6e6;
+  --ink-soft: #a3a3a3;
+  --rule: #3a3a3a;
+  --control-bg: #333333;
+  --control-border: #3e3e3e;
+  --accent: #ffa116;
+  --accent-ink: #1a1a1a;
+  --hl: rgba(255, 161, 22, 0.3);
+  --hl-ink: #ffffff;
+  --hl-line: rgba(255, 161, 22, 0.18);
+  --hl-faint: rgba(255, 161, 22, 0.07);
+  --marker: #ffa116;
+  --red: #ef4743;
+  --red-faint: rgba(239, 71, 67, 0.15);
+  --green: #2cbb5d;
+  --p0: #4ea8ff; --p1: #ff6fb5; --p2: #2cbb5d; --p3: #ffa116; --p4: #b39dff; --p5: #4ec9d6;
+  --syn-keyword: #569cd6;
+  --syn-def: #dcdcaa;
+  --syn-string: #ce9178;
+  --syn-number: #b5cea8;
+  --syn-comment: #6a9955;
+  --syn-builtin: #4ec9b0;
+  color-scheme: dark;
+}
+
+/* The original look: a graph-paper whiteboard and a chalkboard, with a solid highlighter. */
+[data-theme="whiteboard"] {
   --paper: #f4f7fb;
   --grid: #e3e9f1;
   --panel: #ffffff;
   --ink: #1b2a41;
   --ink-soft: #5d6d84;
   --rule: #d3dbe6;
+  --control-bg: #ffffff;
+  --control-border: #1b2a41;
+  --accent: #1b2a41;
+  --accent-ink: #ffffff;
   --hl: #ffe45c;
   --hl-ink: #1b2a41;
+  --hl-line: #ffe45c;
   --hl-faint: #fff6c2;
+  --marker: #1b2a41;
   --red: #c8233a;
   --red-faint: #fde4e7;
   --green: #11704f;
@@ -25,29 +134,35 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --paper: #14211c;
-    --grid: #1b2b25;
-    --panel: #192822;
-    --ink: #e6eee9;
-    --ink-soft: #9db1a8;
-    --rule: #2c4038;
-    --hl: #e8cd4c;
-    --hl-ink: #1c1a08;
-    --hl-faint: rgba(232, 205, 76, 0.16);
-    --red: #ff8a95;
-    --red-faint: rgba(255, 138, 149, 0.16);
-    --green: #6fd8ad;
-    --p0: #84b2ff; --p1: #ff92c9; --p2: #6fd8ad; --p3: #ffab6e; --p4: #bca3ff; --p5: #6ccfe4;
-    --syn-keyword: #c6a8ff;
-    --syn-def: #8fc0ff;
-    --syn-string: #84e1b8;
-    --syn-number: #ffb07c;
-    --syn-comment: #7d958b;
-    --syn-builtin: #7fd6e8;
-    color-scheme: dark;
-  }
+[data-theme="chalkboard"] {
+  --paper: #14211c;
+  --grid: #1b2b25;
+  --panel: #192822;
+  --ink: #e6eee9;
+  --ink-soft: #9db1a8;
+  --rule: #2c4038;
+  --control-bg: #192822;
+  --control-border: #e6eee9;
+  --accent: #e6eee9;
+  --accent-ink: #192822;
+  --hl: #e8cd4c;
+  --hl-ink: #1c1a08;
+  --hl-line: #e8cd4c;
+  --hl-faint: rgba(232, 205, 76, 0.16);
+  --marker: #e6eee9;
+  --red: #ff8a95;
+  --red-faint: rgba(255, 138, 149, 0.16);
+  --green: #6fd8ad;
+  --p0: #84b2ff; --p1: #ff92c9; --p2: #6fd8ad; --p3: #ffab6e; --p4: #bca3ff; --p5: #6ccfe4;
+  --syn-keyword: #c6a8ff;
+  --syn-def: #8fc0ff;
+  --syn-string: #84e1b8;
+  --syn-number: #ffb07c;
+  --syn-comment: #7d958b;
+  --syn-builtin: #7fd6e8;
+  --font-ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -73,14 +188,14 @@ body {
 button, select, input, textarea { font: inherit; color: inherit; }
 
 button, select {
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--control-border);
   border-radius: 6px;
-  background: var(--panel);
+  background: var(--control-bg);
   padding: 5px 11px;
   cursor: pointer;
 }
 button:disabled { opacity: 0.4; cursor: default; }
-button.primary { background: var(--ink); color: var(--panel); font-weight: 700; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
 :focus-visible { outline: 3px solid var(--p0); outline-offset: 2px; }
 
 code { font-family: var(--font-code); font-size: 0.9em; }
@@ -97,10 +212,10 @@ code { font-family: var(--font-code); font-size: 0.9em; }
 }
 .title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
 .bar h1 { margin: 0; font-size: 1.25rem; font-weight: 700; }
-.langs { display: inline-flex; border: 1.5px solid var(--ink); border-radius: 8px; overflow: hidden; }
-.langs button { border: 0; border-radius: 0; padding: 5px 14px; background: var(--panel); font-weight: 700; }
-.langs button + button { border-left: 1.5px solid var(--ink); }
-.langs button[aria-checked="true"] { background: var(--ink); color: var(--panel); }
+.langs { display: inline-flex; border: 1.5px solid var(--control-border); border-radius: 8px; overflow: hidden; }
+.langs button { border: 0; border-radius: 0; padding: 5px 14px; background: var(--control-bg); font-weight: 700; }
+.langs button + button { border-left: 1.5px solid var(--control-border); }
+.langs button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
 .bar-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .toggle { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-soft); }
 
@@ -124,18 +239,22 @@ h2 { margin: 0 0 8px; font-size: 0.95rem; font-weight: 700; color: var(--ink-sof
 .editor {
   flex: 1;
   min-height: 0;
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--control-border);
   border-radius: 10px;
   overflow: hidden;
   background: var(--panel);
 }
-.editor .cm-editor { height: 100%; }
+.editor .monaco-editor { --vscode-editor-background: var(--panel); }
 
-/* The highlighter: the line about to run, the line that just ran, and errors. */
-.cm-line.line-next { background: var(--hl); box-shadow: inset 4px 0 0 var(--ink); }
-.cm-line.line-next, .cm-line.line-next * { color: var(--hl-ink) !important; }
-.cm-line.line-prev { background: var(--hl-faint); }
-.cm-line.line-error { background: var(--red-faint); box-shadow: inset 4px 0 0 var(--red); }
+/* The line about to run, the line that just ran, and errors (Monaco decorations). */
+.monaco-editor .line-next { background: var(--hl-line); }
+.monaco-editor .line-next-marker { background: var(--marker); width: 4px !important; margin-left: 3px; }
+.monaco-editor .line-prev { background: var(--hl-faint); }
+.monaco-editor .line-error { background: var(--red-faint); }
+.monaco-editor .line-error-marker { background: var(--red); width: 4px !important; margin-left: 3px; }
+/* The original themes use a solid highlighter, so text on it switches to dark ink. */
+[data-theme="whiteboard"] .monaco-editor .line-next-text,
+[data-theme="chalkboard"] .monaco-editor .line-next-text { color: var(--hl-ink) !important; }
 
 /* ---------- input + output ---------- */
 
@@ -183,8 +302,8 @@ h2 { margin: 0 0 8px; font-size: 0.95rem; font-weight: 700; color: var(--ink-sof
   gap: 8px;
   align-items: center;
 }
-.controls .play { min-width: 5.5em; background: var(--ink); color: var(--panel); font-weight: 700; }
-.scrub { flex: 1 1 140px; accent-color: var(--ink); min-width: 120px; }
+.controls .play { min-width: 5.5em; background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.scrub { flex: 1 1 140px; accent-color: var(--accent); min-width: 120px; }
 .counter { font-family: var(--font-code); font-size: 13px; color: var(--ink-soft); min-width: 6.5em; text-align: right; }
 
 .status {

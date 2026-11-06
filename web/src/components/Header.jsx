@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { EXAMPLES, LANGUAGES } from '../lib/examples.js';
+import { THEMES } from '../lib/themes.js';
 
-/** Title, language switch, example picker, run-as-you-type toggle, Run and Copy link. */
-export default function Header({ lang, busy, autorun, onLanguage, onExample, onAutorun, onRun, onShare }) {
+/** Title, language switch, example picker, theme, run-as-you-type toggle, Run and Copy link. */
+export default function Header({ lang, busy, autorun, themeChoice, onTheme, onLanguage, onExample, onAutorun, onRun, onShare }) {
   const [shareLabel, setShareLabel] = useState('Copy link');
 
   async function share() {
@@ -27,6 +28,10 @@ export default function Header({ lang, busy, autorun, onLanguage, onExample, onA
         <select id="examples" value="" onChange={(e) => e.target.value !== '' && onExample(Number(e.target.value))}>
           <option value="">Load an example…</option>
           {EXAMPLES[lang].map((ex, i) => <option key={ex.name} value={i}>{ex.name}</option>)}
+        </select>
+        <label className="sr-only" htmlFor="theme">Theme</label>
+        <select id="theme" value={themeChoice} onChange={(e) => onTheme(e.target.value)} title="Theme">
+          {THEMES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
         <label className="toggle">
           <input type="checkbox" checked={autorun} onChange={(e) => onAutorun(e.target.checked)} /> Run as I type
