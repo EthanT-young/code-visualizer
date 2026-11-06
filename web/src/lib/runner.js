@@ -117,7 +117,8 @@ export class Runner {
       signal: controller.signal,
     })
       .then(async (res) => {
-        if (!res.ok && res.status !== 413 && res.status !== 400) throw new Error(`server responded ${res.status}`);
+        // 400, 413 and 429 carry an explanation in the same format as a trace.
+        if (!res.ok && ![400, 413, 429].includes(res.status)) throw new Error(`server responded ${res.status}`);
         const trace = await res.json();
         this.finish(id, () => trace);
       })

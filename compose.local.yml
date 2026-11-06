@@ -11,6 +11,7 @@ services:
     environment:
       LISTEN: "8080"
       MAX_JOBS: "2"
+      RATE_LIMIT: "0"   # just you on this computer: no limit
 
     # Same lockdown as docker-compose.yml, except it needs a network for the port.
     read_only: true

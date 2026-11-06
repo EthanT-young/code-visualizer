@@ -5,7 +5,10 @@ Python runs entirely in the browser; this server is only needed for Java and C++
 Environment:
   LISTEN           "8080" (TCP port) or "unix:/path/to.sock" (default 8080)
   ACCESS_PASSWORD  optional; when set, the whole site asks for it (any username)
-  MAX_JOBS         traces allowed to run at once (default 2)
+  MAX_JOBS         traces allowed to run at once (default 2, at most 4 in the container)
+  RATE_LIMIT       Java/C++ runs allowed per visitor, as "runs/seconds" (default 30/600; 0 = off)
+  TRUST_PROXY      "1" to read the visitor's address from X-Forwarded-For in port mode
+                   (always used with a unix socket, where the reverse proxy is the only client)
 """
 import base64
 import hmac
@@ -19,7 +22,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import queue
+import time
 import uuid
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,7 +42,6 @@ MAX_CODE = 50_000
 MAX_STDIN = 50_000
 JOB_TIMEOUT = 25  # seconds; the tracers stop programs themselves after 10 s
 
-job_slots = threading.BoundedSemaphore(MAX_JOBS)
 # Each job may create at most this many processes/threads (counted per user, so a
 # fork bomb stops here while the server keeps room under the container's pids limit).
 JOB_NPROC = int(os.environ.get('JOB_NPROC', '300'))
@@ -45,10 +50,45 @@ sessions_lock = threading.Lock()
 # Inside the container (the Dockerfile sets this) the server owns every process except
 # tini, so it can sweep up processes that escaped their job. Never outside a container.
 IN_CONTAINER = os.environ.get('CODEVIZ_CONTAINER') == '1'
-# In the container the server runs as root (with only a few capabilities) and runs every
-# program as this unprivileged user, so programs can't signal or tamper with the server.
-SANDBOX_UID = int(os.environ.get('SANDBOX_UID', '10001'))
+# In the container the server runs as root (with only a few capabilities) and runs each
+# program as its own unprivileged user, so programs can't signal or tamper with the server
+# or with each other. Each concurrent run borrows one user from this pool.
+SANDBOX_UIDS = [10001 + i for i in range(MAX_JOBS)]
 SANDBOXED = IN_CONTAINER and os.geteuid() == 0
+job_users = queue.Queue()
+for _uid in SANDBOX_UIDS:
+    job_users.put(_uid)
+
+
+class RateLimiter:
+    """Sliding window: at most `limit` runs per `window` seconds per visitor."""
+
+    def __init__(self, spec):
+        runs, _, seconds = (spec or '0').partition('/')
+        self.limit = int(runs or 0)
+        self.window = float(seconds or 600)
+        self.hits = {}
+        self.lock = threading.Lock()
+
+    def check(self, key):
+        """Returns 0 if allowed (and records the run), else seconds until the next run is allowed."""
+        if self.limit <= 0:
+            return 0
+        now = time.monotonic()
+        with self.lock:
+            if len(self.hits) > 10_000:  # forget idle visitors
+                self.hits = {k: q for k, q in self.hits.items() if q and q[-1] > now - self.window}
+            q = self.hits.setdefault(key, deque())
+            while q and q[0] <= now - self.window:
+                q.popleft()
+            if len(q) >= self.limit:
+                return int(q[0] + self.window - now) + 1
+            q.append(now)
+            return 0
+
+
+rate_limiter = RateLimiter(os.environ.get('RATE_LIMIT', '30/600'))
+TRUST_PROXY = os.environ.get('TRUST_PROXY') == '1'
 
 CONTENT_TYPES = {
     '.html': 'text/html; charset=utf-8',
@@ -128,29 +168,32 @@ def kill_where(should_kill):
                 pass
 
 
-def sandbox_owned(pid):
-    if not SANDBOXED:
-        return True
+def proc_uid(pid):
     try:
-        return os.stat(f'/proc/{pid}').st_uid == SANDBOX_UID
+        return os.stat(f'/proc/{pid}').st_uid
     except OSError:
-        return False
+        return None
 
 
-def kill_session(sid):
-    """Kills everything a job started. gdb runs programs in their own process group,
-    so killing the group isn't enough, but they stay in the job's session."""
-    kill_where(lambda pid: proc_session(pid) == sid)
+def sandbox_owned(pid):
+    return not SANDBOXED or proc_uid(pid) in SANDBOX_UIDS
 
 
-def hand_over(work):
-    """Gives the job folder to the sandbox user."""
+def kill_job(sid, uid):
+    """Kills everything a job started: its session (gdb runs programs in their own process
+    group, but they stay in the session) and, in the container, everything its user owns,
+    including processes that left the session with setsid()."""
+    kill_where(lambda pid: proc_session(pid) == sid or (SANDBOXED and proc_uid(pid) == uid))
+
+
+def hand_over(work, uid):
+    """Gives the job folder to the job's sandbox user."""
     if not SANDBOXED:
         return
     for root, dirs, files in os.walk(work):
-        os.chown(root, SANDBOX_UID, SANDBOX_UID)
+        os.chown(root, uid, uid)
         for name in files:
-            os.chown(os.path.join(root, name), SANDBOX_UID, SANDBOX_UID)
+            os.chown(os.path.join(root, name), uid, uid)
 
 
 def is_healthcheck(pid):
@@ -178,9 +221,9 @@ def reaper_loop():
             sys.stderr.write(f'reaper: {e!r}\n')
 
 
-def run_limited(cmd, cwd, timeout, env=None):
+def run_limited(cmd, cwd, timeout, env, uid):
     # New session = new process group, so the whole tree can be killed at once.
-    drop = {'user': SANDBOX_UID, 'group': SANDBOX_UID, 'extra_groups': []} if SANDBOXED else {}
+    drop = {'user': uid, 'group': uid, 'extra_groups': []} if SANDBOXED else {}
     proc = subprocess.Popen(limited(cmd, timeout), cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True, **drop)
     with sessions_lock:
@@ -195,7 +238,7 @@ def run_limited(cmd, cwd, timeout, env=None):
         proc.communicate()
         raise TraceError(f'The run took longer than {timeout} seconds and was stopped.')
     finally:
-        kill_session(proc.pid)  # the traced JVM, gdb's program, anything they forked
+        kill_job(proc.pid, uid)  # the traced JVM, gdb's program, anything they forked
         with sessions_lock:
             active_sessions.discard(proc.pid)
     return proc.returncode, out, err
@@ -210,22 +253,22 @@ def base_env():
     }
 
 
-def trace_java(work, code, stdin):
+def trace_java(work, code, stdin, uid):
     (work / 'source.txt').write_text(code, encoding='utf-8')
     (work / 'stdin.txt').write_text(stdin, encoding='utf-8')
-    hand_over(work)
+    hand_over(work, uid)
     cmd = ['java', '-XX:+UseSerialGC', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
-    _, out, err = run_limited(cmd, work, JOB_TIMEOUT, base_env())
+    _, out, err = run_limited(cmd, work, JOB_TIMEOUT, base_env(), uid)
     try:
         return json.loads(out.decode('utf-8'))
     except ValueError:
         raise TraceError('The Java tracer failed: ' + err.decode('utf-8', 'replace').strip()[-300:])
 
 
-def trace_cpp(work, code, stdin):
+def trace_cpp(work, code, stdin, uid):
     (work / 'main.cpp').write_text(code, encoding='utf-8')
     (work / 'stdin.txt').write_text(stdin, encoding='utf-8')
-    hand_over(work)
+    hand_over(work, uid)
     includes = ['-include', str(PRELUDE)]
     helpers = []
     if not re.search(r'\b(struct|class)\s+ListNode\b', code):
@@ -235,7 +278,7 @@ def trace_cpp(work, code, stdin):
         includes += ['-include', str(CPP_DIR / 'treenode.h')]
         helpers.append('TreeNode')
     compile_cmd = ['g++', '-std=gnu++20', '-g', '-O0', '-fno-omit-frame-pointer', *includes, '-o', 'prog', 'main.cpp']
-    code_rc, _, err = run_limited(compile_cmd, work, 30, base_env())
+    code_rc, _, err = run_limited(compile_cmd, work, 30, base_env(), uid)
     if code_rc != 0:
         text = err.decode('utf-8', 'replace')
         m = re.search(r'main\.cpp:(\d+):\d+: (?:fatal )?error: (.+)', text)
@@ -245,7 +288,7 @@ def trace_cpp(work, code, stdin):
         return error_trace('Compile error: ' + (text.strip().splitlines() or ['unknown'])[-1][:300])
     env = base_env()
     env.update(CV_WORK=str(work), CV_HELPERS=' '.join(helpers))
-    run_limited(['gdb', '-q', '-nx', '-batch', '-x', str(CPP_DIR / 'tracer_gdb.py')], work, JOB_TIMEOUT, env)
+    run_limited(['gdb', '-q', '-nx', '-batch', '-x', str(CPP_DIR / 'tracer_gdb.py')], work, JOB_TIMEOUT, env, uid)
     try:
         return json.loads((work / 'trace.json').read_text(encoding='utf-8'))
     except (OSError, ValueError):
@@ -253,17 +296,19 @@ def trace_cpp(work, code, stdin):
 
 
 def trace(language, code, stdin):
-    if not job_slots.acquire(timeout=20):
+    try:
+        uid = job_users.get(timeout=20)  # also limits how many programs run at once
+    except queue.Empty:
         raise TraceError('The server is busy running other programs. Try again in a few seconds.')
     work = JOBS_DIR / uuid.uuid4().hex
     try:
         work.mkdir(parents=True)
         if language == 'java':
-            return trace_java(work, code, stdin)
-        return trace_cpp(work, code, stdin)
+            return trace_java(work, code, stdin, uid)
+        return trace_cpp(work, code, stdin, uid)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-        job_slots.release()
+        job_users.put(uid)
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +319,17 @@ class Handler(BaseHTTPRequestHandler):
     server_version = 'CodeVisualizer'
     sys_version = ''
 
+    def visitor(self):
+        """The visitor's address. Behind the reverse proxy it's the last X-Forwarded-For entry,
+        the one the proxy itself added."""
+        via_socket = not self.client_address or not self.client_address[0]
+        forwarded = self.headers.get('X-Forwarded-For', '')
+        if (via_socket or TRUST_PROXY) and forwarded:
+            return forwarded.split(',')[-1].strip()
+        return self.client_address[0] if not via_socket else 'local'
+
     def address_string(self):
-        return self.headers.get('X-Forwarded-For', '-') if self.client_address in ('', None) else super().address_string()
+        return self.visitor()
 
     def log_message(self, fmt, *args):
         sys.stderr.write(f'{self.command} {self.path} {fmt % args}\n')
@@ -350,6 +404,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(HTTPStatus.BAD_REQUEST, error_trace('Language must be java or cpp.'))
         if len(code) > MAX_CODE or len(stdin) > MAX_STDIN:
             return self.send(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, error_trace('The program or input is too large (50 KB max).'))
+        wait = rate_limiter.check(self.visitor())
+        if wait:
+            minutes = f'{wait // 60} min ' if wait >= 60 else ''
+            return self.send(HTTPStatus.TOO_MANY_REQUESTS, error_trace(
+                f'You have run a lot of Java/C++ programs in a short time. Try again in {minutes}{wait % 60} s. '
+                'Python runs in your browser and is not limited.'), extra={'Retry-After': str(wait)})
         try:
             result = trace(language, code, stdin)
         except TraceError as e:
@@ -369,6 +429,8 @@ class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
 
 
 def main():
+    if SANDBOXED and MAX_JOBS > 4:
+        sys.exit('MAX_JOBS can be at most 4: the image has four sandbox users (10001-10004).')
     listen = os.environ.get('LISTEN', '8080')
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     if listen.startswith('unix:'):

@@ -25,9 +25,9 @@ RUN javac --release 21 -d server/java/classes server/java/Tracer.java \
  && g++ -std=gnu++20 -g -O0 -fno-omit-frame-pointer -x c++-header server/cpp/prelude.h -o server/cpp/prelude.h.gch \
  && rm -rf server/__pycache__ server/cpp/__pycache__
 
-# Programs run as this unprivileged user. The server starts as root with only the
-# capabilities listed in docker-compose.yml and switches to `runner` for every program.
-RUN useradd --create-home --uid 10001 runner
+# Programs run as unprivileged users, one per concurrent run (MAX_JOBS <= 4). The server
+# starts as root with only the capabilities listed in docker-compose.yml and switches users.
+RUN for i in 1 2 3 4; do useradd --no-create-home --home-dir /tmp --uid 1000$i "runner$i"; done
 
 ENV LISTEN=8080 \
     CODEVIZ_CONTAINER=1 \

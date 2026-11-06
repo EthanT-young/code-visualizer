@@ -23,7 +23,9 @@ services:
       LISTEN: unix:/run/codeviz/codeviz.sock
       # Optional: require a password for the whole site (any username works).
       ACCESS_PASSWORD: ${ACCESS_PASSWORD:-}
-      MAX_JOBS: "2"
+      MAX_JOBS: "2"            # programs traced at once (at most 4)
+      # Java/C++ runs allowed per visitor, as runs/seconds; 0 turns the limit off.
+      RATE_LIMIT: ${RATE_LIMIT:-30/600}
     volumes:
       # The socket appears at ./socket/codeviz.sock on the host for Caddy.
       - ./socket:/run/codeviz

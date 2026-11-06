@@ -2,6 +2,8 @@
 
 Step through Java, C++ or Python code line by line and watch the data change. Built for explaining LeetCode and HackerRank solutions.
 
+![Stepping through Two Sum in Java: the code with the current line highlighted, the call stack, and the array with an i pointer above it](docs/screenshot.png)
+
 - Arrays and strings, with index pointers (`i`, `j`, `left`, `right`, `lo`, `hi`, `mid`, `slow`, `fast`…) drawn above the cells
 - 2D grids, with the cell at `(r, c)`, `(row, col)` or `(i, j)` outlined
 - Hash maps, sets, stacks, queues, deques and priority queues
@@ -62,18 +64,56 @@ handle_path /visualizer/* {
 }
 ```
 
-### Password (optional)
+## Deploy from GitHub
 
-Anyone who can open the page can run Java and C++ code on your server, inside the limits below. To keep it private, put `ACCESS_PASSWORD=something-long` in a `.env` file next to `docker-compose.yml`. The browser then asks for it; any username works.
+On the server, once:
 
-### Limits and isolation
+```bash
+git clone https://github.com/<you>/code-visualizer.git
+cd code-visualizer
+./deploy.sh
+```
+
+Then point Caddy at the socket as shown above. To update, run `./deploy.sh` again: it pulls from GitHub and rebuilds only when something changed. To update automatically, add a cron job (`crontab -e`):
+
+```
+*/15 * * * * cd /path/to/code-visualizer && ./deploy.sh >> deploy.log 2>&1
+```
+
+After a deploy, check that everything works, including the sandbox:
+
+```bash
+python3 tests/smoke_test.py --socket socket/codeviz.sock
+```
+
+## Settings
+
+Put these in a `.env` file next to `docker-compose.yml` (it's ignored by git), then run `docker compose up -d`.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `RATE_LIMIT` | `30/600` | Java/C++ runs allowed per visitor: 30 per 600 seconds. `0` turns it off. Python runs in the visitor's browser and isn't limited. |
+| `ACCESS_PASSWORD` | none | Require a password for the whole site (any username works). |
+
+Visitors are told how long to wait when they hit the limit. Behind Caddy, the visitor's address comes from the `X-Forwarded-For` entry Caddy adds, so a client can't dodge the limit by sending its own.
+
+## Limits and isolation
+
+Anyone who can open the page can run Java and C++ code on your server, so it runs locked down:
 
 - No network and a read-only filesystem for the whole container
-- Programs run as an unprivileged user (`runner`, uid 10001) with no Linux capabilities, so they can't signal or modify the server. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
+- Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
 - 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 programs traced at a time, each limited to 300 processes and 20 MB files
 - Each run: 10 seconds of program time, 3,000 steps, 100 KB of output, 50 KB of code. Programs that run longer are stopped, and the steps recorded so far are still shown.
 - Everything a program starts is killed when its run ends, including fork bombs and processes that try to detach; `tini` cleans up the rest
-- Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`: the server stayed up for all of them
+- Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`; `tests/smoke_test.py` repeats the important ones
+
+### What these limits don't cover
+
+- **The kernel is shared.** Docker containers share the host's Linux kernel, so a kernel bug could let code escape. For stronger isolation, run the container under [gVisor](https://gvisor.dev) or on a separate VM.
+- **Shared links run code when opened.** Python runs in the visitor's browser; Java and C++ run on your server like any other run.
+- **Python loads from jsDelivr.** If that CDN were compromised it could run code on the page. The version is pinned; self-hosting Pyodide would remove the dependency.
+- **The password is HTTP basic auth.** It's sent with every request, so use it only behind HTTPS (Caddy does this), and pick a long random password since wrong guesses aren't limited.
 
 ## Writing code for it
 
@@ -83,7 +123,7 @@ Anyone who can open the page can run Java and C++ code on your server, inside th
 
 **Python.** `List`, `Optional`, `deque`, `defaultdict`, `Counter`, `heapq`, `bisect` and `math` are preloaded. `ListNode`, `TreeNode`, `build_list([1, 2, 3])` and `build_tree([3, 9, 20, None, None, 15, 7])` are provided.
 
-**Pointers.** Integer variables named `i`, `j`, `k`, `l`, `r`, `lo`, `hi`, `low`, `high`, `mid`, `left`, `right`, `start`, `end`, `slow`, `fast`, `idx`, `ptr`, `pos`, `top`, `front`, `rear`, `p`, `q`, `cur`, `curr` (or ending in `_idx`, `_ptr`, `_left`…) are drawn as arrows into arrays and strings in the same function. Change `POINTER_RE` in `public/app.js` to add your own names.
+**Pointers.** Integer variables named `i`, `j`, `k`, `l`, `r`, `lo`, `hi`, `low`, `high`, `mid`, `left`, `right`, `start`, `end`, `slow`, `fast`, `idx`, `ptr`, `pos`, `top`, `front`, `rear`, `p`, `q`, `cur`, `curr` (or ending in `_idx`, `_ptr`, `_left`…) are drawn as arrows into arrays and strings in the same function. Change `POINTER_RE` in `web/src/lib/trace.js` to add your own names.
 
 ## Known limitations
 
@@ -104,6 +144,8 @@ web/               the React site (Vite): editor, step controls and all the draw
 server/server.py   web server: serves the built site and runs Java/C++ traces
 server/java/       JDI tracer for Java
 server/cpp/        GDB tracer, LeetCode prelude headers
+tests/             smoke test for a running server
+deploy.sh          pull from GitHub and rebuild
 ```
 
 ## Working on the site
@@ -118,3 +160,7 @@ npm run dev                                         # open the URL it prints
 ```
 
 `npm run dev` sends Java and C++ runs to the server on port 8080. Run `docker compose -f compose.local.yml up -d --build` again to put your changes into the container.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
