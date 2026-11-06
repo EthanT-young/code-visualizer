@@ -15,7 +15,6 @@ import hmac
 import json
 import os
 import re
-import shutil
 import signal
 import socketserver
 import subprocess
@@ -199,30 +198,39 @@ def hand_over(work, uid):
             os.chown(os.path.join(root, name), uid, uid)
 
 
+def remove_trees(paths):
+    """`rm -rf` as the server: unlike shutil.rmtree it doesn't recurse on the stack, so a
+    very deep tree can't crash it, and it doesn't follow symlinks."""
+    for start in range(0, len(paths), 200):
+        try:
+            subprocess.run(['rm', '-rf', '--one-file-system', '--', *map(str, paths[start:start + 200])],
+                           env=base_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f'remove: {e!r}\n')
+
+
 def clean_up_user(uid):
-    """Container only: delete what a finished run's user left behind in the shared /tmp and
-    /dev/shm, and its System V IPC objects, so one run can't fill the disk or leave files for
-    later runs. Its processes are already gone (kill_job)."""
+    """Container only: delete what a finished run's user left behind in the shared /tmp,
+    /dev/shm and /dev/mqueue, and its System V IPC objects, so one run can't fill the disk or
+    leave anything for later runs. Its processes are already gone (kill_job). Never raises.
+
+    With CAP_FOWNER (see docker-compose.yml) the server can also empty folders the run
+    marked sticky, which DAC_OVERRIDE alone doesn't allow."""
     if not SANDBOXED:
         return
-    for shared in (Path(tempfile.gettempdir()), Path('/dev/shm')):
+    for shared in (Path(tempfile.gettempdir()), Path('/dev/shm'), Path('/dev/mqueue')):
         try:
-            entries = list(os.scandir(shared))
+            entries = [e.path for e in os.scandir(shared) if e.stat(follow_symlinks=False).st_uid == uid]
         except OSError:
             continue
-        for entry in entries:
-            try:
-                if entry.stat(follow_symlinks=False).st_uid != uid:
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    shutil.rmtree(entry.path)  # doesn't follow symlinks
-                else:
-                    os.unlink(entry.path)
-            except OSError as e:
-                sys.stderr.write(f'cleanup {entry.path}: {e!r}\n')
+        remove_trees(entries)
+        for path in entries:
+            if os.path.lexists(path):
+                sys.stderr.write(f'cleanup: could not delete {path}\n')
     try:  # run as the user, since only an object's owner (or CAP_IPC_OWNER) can remove it
         subprocess.run(['ipcrm', '--all'], user=uid, group=uid, extra_groups=[], env=base_env(),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
         sys.stderr.write(f'ipcrm: {e!r}\n')
 
@@ -339,14 +347,19 @@ def trace(language, code, stdin):
             busy_uids.add(uid)
         work = JOBS_DIR / uuid.uuid4().hex
         try:
-            work.mkdir()
+            work.mkdir(parents=True)
             if language == 'java':
                 return trace_java(work, code, stdin, uid)
             return trace_cpp(work, code, stdin, uid)
         finally:
-            shutil.rmtree(work, ignore_errors=True)
-            kill_job(-1, uid)  # anything of this user's still alive (run_limited already did this)
-            clean_up_user(uid)
+            # Each step on its own, so a failure can't replace the run's result or skip the rest.
+            for step in (lambda: remove_trees([work]),
+                         lambda: kill_job(-1, uid),  # anything of this user's still alive
+                         lambda: clean_up_user(uid)):
+                try:
+                    step()
+                except Exception as e:  # noqa: BLE001
+                    sys.stderr.write(f'cleanup after run: {e!r}\n')
     finally:
         with sessions_lock:
             busy_uids.discard(uid)
@@ -475,7 +488,10 @@ def main():
         sys.exit('MAX_JOBS can be at most 4: the image has four sandbox users (10001-10004).')
     listen = os.environ.get('LISTEN', '8080')
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(JOBS_DIR, 0o711)  # runs can enter their own folder but not list the others
+    try:
+        os.chmod(JOBS_DIR, 0o711)  # runs can enter their own folder but not list the others
+    except OSError as e:
+        sys.stderr.write(f'could not make {JOBS_DIR} private: {e!r}\n')
     if listen.startswith('unix:'):
         path = listen[5:]
         try:

@@ -12,7 +12,7 @@ services:
     cap_drop: [ALL]
     # Just enough for the server to run programs as the separate `runner` user
     # and clean up after them. Programs themselves get no capabilities.
-    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE]
+    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE, FOWNER]
     security_opt:
       - no-new-privileges:true
     mem_limit: 1g

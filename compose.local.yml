@@ -18,7 +18,7 @@ services:
     tmpfs:
       - /tmp:size=512m,exec,mode=1777
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE]
+    cap_add: [SETUID, SETGID, CHOWN, KILL, DAC_OVERRIDE, FOWNER]
     security_opt:
       - no-new-privileges:true
     mem_limit: 1g

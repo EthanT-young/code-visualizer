@@ -4,7 +4,7 @@ Usage (Python 3.8+, no packages needed):
     python3 tests/smoke_test.py --socket socket/codeviz.sock    # the Caddy setup
     python3 tests/smoke_test.py --url http://localhost:8080     # compose.local.yml
 
-It sends about 17 runs, which counts toward your own rate limit (30 per 10 minutes by default).
+It sends about 20 runs, which counts toward your own rate limit (30 per 10 minutes by default).
 """
 import argparse
 import http.client
@@ -125,15 +125,38 @@ int main() {
     wait(nullptr);
 }
 '''),
-    'cpp_leave_file': ('cpp', '''int main() {
-    ofstream("/tmp/left-behind") << "secret";
-    ofstream("/dev/shm/left-behind") << "secret";
+    # Leaves things behind in every shared place, in forms that are hard to delete: a very
+    # deep folder tree, a sticky folder, a message queue. (A forked child does the work, so
+    # it isn't slowed by the debugger stepping through it.)
+    'cpp_leave_file': ('cpp', '''#include <mqueue.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+int main() {
+    if (fork() == 0) {
+        ofstream("/tmp/left-behind") << "secret";
+        ofstream("/dev/shm/left-behind") << "secret";
+        mkdir("/tmp/sticky", 0777);
+        chmod("/tmp/sticky", 01777);
+        ofstream("/tmp/sticky/file") << "secret";
+        mq_close(mq_open("/left-behind", O_CREAT | O_RDWR, 0666, nullptr));
+        mkdir("/tmp/deep", 0777);
+        chdir("/tmp/deep");
+        for (int i = 0; i < 4000; i++) {
+            mkdir("d", 0777);
+            chdir("d");
+        }
+        _exit(0);
+    }
+    wait(nullptr);
     cout << "written";
 }
 '''),
     'cpp_find_file': ('cpp', '''int main() {
-    bool left = access("/tmp/left-behind", F_OK) == 0 || access("/dev/shm/left-behind", F_OK) == 0;
-    cout << (left ? "FOUND LEFTOVER" : "clean");
+    string found;
+    for (string path : {"/tmp/left-behind", "/dev/shm/left-behind", "/tmp/sticky", "/tmp/deep", "/dev/mqueue/left-behind"}) {
+        if (access(path.c_str(), F_OK) == 0) found += path + " ";
+    }
+    cout << (found.empty() ? "clean" : "FOUND " + found);
 }
 '''),
     'cpp_list_jobs': ('cpp', '''#include <dirent.h>
@@ -233,14 +256,18 @@ def main():
     time.sleep(2.0)
     r = client.trace('java_slow')
     t.join()
-    check("a program can't take over a Java run's debugger", r['ok'] and r['stdout'].strip() == 'done' and len(r['steps']) > 10,
+    attacked = (found.get('stdout') or '').startswith('connected') and not found['stdout'].startswith('connected 0 ')
+    check("a program can't take over a Java run's debugger", attacked and r['ok'] and r['stdout'].strip() == 'done' and len(r['steps']) > 10,
           f"watcher: {found.get('stdout')!r}, java: {r.get('stdout')!r} {r.get('error')}")
     r = client.trace('java_slow')
     check('Java works again afterwards', r['ok'] and r['stdout'].strip() == 'done', r.get('error'))
 
-    client.trace('cpp_leave_file')
+    r = client.trace('cpp_leave_file')
+    check('a run can leave things behind (test setup)', r['stdout'] == 'written', r['stdout'] or r.get('error'))
     r = client.trace('cpp_find_file')
-    check('files a run leaves in /tmp are deleted', r['stdout'] == 'clean', r['stdout'] or r.get('error'))
+    check('what a run leaves behind is deleted', r['stdout'] == 'clean', r['stdout'] or r.get('error'))
+    rs = [client.trace('cpp_hello') for _ in range(2)]  # both sandbox users still work
+    check('the server works after cleaning up', all(x['ok'] and x['stdout'].strip() == '42' for x in rs), [x.get('error') for x in rs])
     r = client.trace('cpp_list_jobs')
     check("a run can't list other runs' folders", r['stdout'] == 'private', r['stdout'] or r.get('error'))
 
