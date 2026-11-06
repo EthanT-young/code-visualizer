@@ -52,12 +52,62 @@ sessions_lock = threading.Lock()
 IN_CONTAINER = os.environ.get('CODEVIZ_CONTAINER') == '1'
 # In the container the server runs as root (with only a few capabilities) and runs each
 # program as its own unprivileged user, so programs can't signal or tamper with the server
-# or with each other. Each concurrent run borrows one user from this pool.
+# or with each other (Java runs also get the container alone; see RunGate). Each concurrent
+# run borrows one user from this pool.
 SANDBOX_UIDS = [10001 + i for i in range(MAX_JOBS)]
 SANDBOXED = IN_CONTAINER and os.geteuid() == 0
 job_users = queue.Queue()
 for _uid in SANDBOX_UIDS:
     job_users.put(_uid)
+
+
+class RunGate:
+    """Decides which runs may share the container.
+
+    Java needs the container to itself: JDI connects the tracer to the traced JVM over a
+    TCP port on loopback, and every process in the container shares that loopback, so a
+    program running at the same time could connect to the port and read or take over
+    another visitor's JVM. C++ (gdb drives the program directly, no socket) runs alongside
+    other C++ runs. A waiting Java run blocks new C++ runs, so Java isn't starved.
+    """
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.shared = 0  # C++ runs in progress
+        self.exclusive = False  # a Java run in progress
+        self.waiting_exclusive = 0
+
+    def acquire(self, exclusive, timeout):
+        deadline = time.monotonic() + timeout
+        with self.cond:
+            if exclusive:
+                self.waiting_exclusive += 1
+            try:
+                while self.exclusive or (self.shared if exclusive else self.waiting_exclusive):
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        return False
+                    self.cond.wait(left)
+                if exclusive:
+                    self.exclusive = True
+                else:
+                    self.shared += 1
+                return True
+            finally:
+                if exclusive:
+                    self.waiting_exclusive -= 1
+                    self.cond.notify_all()  # if it gave up, let blocked C++ runs go
+
+    def release(self, exclusive):
+        with self.cond:
+            if exclusive:
+                self.exclusive = False
+            else:
+                self.shared -= 1
+            self.cond.notify_all()
+
+
+run_gate = RunGate()
 
 
 class RateLimiter:
@@ -295,20 +345,37 @@ def trace_cpp(work, code, stdin, uid):
         raise TraceError('The program stopped before it could be traced. This happens when a program kills other processes or crashes the debugger.')
 
 
+def kill_all_sandboxed():
+    """Container only: kill every process a sandbox user owns. Called while a Java run holds
+    the container alone, so anything left is a straggler from an earlier run."""
+    if SANDBOXED:
+        kill_where(lambda pid: proc_uid(pid) in SANDBOX_UIDS)
+
+
 def trace(language, code, stdin):
+    busy = TraceError('The server is busy running other programs. Try again in a few seconds.')
+    exclusive = language == 'java'
+    deadline = time.monotonic() + 20
+    if not run_gate.acquire(exclusive, 20):
+        raise busy
     try:
-        uid = job_users.get(timeout=20)  # also limits how many programs run at once
-    except queue.Empty:
-        raise TraceError('The server is busy running other programs. Try again in a few seconds.')
-    work = JOBS_DIR / uuid.uuid4().hex
-    try:
-        work.mkdir(parents=True)
-        if language == 'java':
-            return trace_java(work, code, stdin, uid)
-        return trace_cpp(work, code, stdin, uid)
+        try:
+            uid = job_users.get(timeout=max(0.1, deadline - time.monotonic()))  # also limits how many programs run at once
+        except queue.Empty:
+            raise busy
+        work = JOBS_DIR / uuid.uuid4().hex
+        try:
+            if exclusive:
+                kill_all_sandboxed()
+            work.mkdir(parents=True)
+            if exclusive:
+                return trace_java(work, code, stdin, uid)
+            return trace_cpp(work, code, stdin, uid)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            job_users.put(uid)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
-        job_users.put(uid)
+        run_gate.release(exclusive)
 
 
 # ---------------------------------------------------------------------------

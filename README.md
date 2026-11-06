@@ -102,8 +102,8 @@ Visitors are told how long to wait when they hit the limit. Behind Caddy, the vi
 Anyone who can open the page can run Java and C++ code on your server, so it runs locked down:
 
 - No network and a read-only filesystem for the whole container
-- Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
-- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 programs traced at a time, each limited to 300 processes and 20 MB files
+- Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. Java runs get the container to themselves: the Java tracer talks to the program over a loopback port, which a program running alongside could otherwise connect to, so a Java run waits for other runs to finish (and leftover processes are killed) before it starts. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
+- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 C++ programs or 1 Java program traced at a time, each limited to 300 processes and 20 MB files
 - Each run: 10 seconds of program time, 3,000 steps, 100 KB of output, 50 KB of code. Programs that run longer are stopped, and the steps recorded so far are still shown.
 - Everything a program starts is killed when its run ends, including fork bombs and processes that try to detach; `tini` cleans up the rest
 - Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`; `tests/smoke_test.py` repeats the important ones

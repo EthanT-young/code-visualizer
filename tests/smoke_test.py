@@ -4,7 +4,7 @@ Usage (Python 3.8+, no packages needed):
     python3 tests/smoke_test.py --socket socket/codeviz.sock    # the Caddy setup
     python3 tests/smoke_test.py --url http://localhost:8080     # compose.local.yml
 
-It sends about 12 runs, which counts toward your own rate limit (30 per 10 minutes by default).
+It sends about 14 runs, which counts toward your own rate limit (30 per 10 minutes by default).
 """
 import argparse
 import http.client
@@ -62,6 +62,59 @@ int main() {
         usleep(100000);
     }
     cout << "survived";
+}
+'''),
+    'java_slow': ('java', '''public class Main {
+    public static void main(String[] args) throws Exception {
+        for (int i = 0; i < 15; i++) {
+            Thread.sleep(100);
+        }
+        System.out.println("done");
+    }
+}
+'''),
+    # Watches for a listening TCP port owned by another sandbox user (the Java tracer's
+    # debugger port) and connects to it. The watching runs in a forked child, which the
+    # debugger doesn't step through, so it isn't cut short by the step limit.
+    'cpp_find_jdwp': ('cpp', '''#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+int scan() {
+    int found = 0;
+    for (string file : {"/proc/net/tcp", "/proc/net/tcp6"}) {
+        ifstream in(file);
+        string line;
+        getline(in, line);
+        while (getline(in, line)) {
+            istringstream ss(line);
+            string sl, local, remote, st, queues, timer, retr;
+            unsigned uid;
+            ss >> sl >> local >> remote >> st >> queues >> timer >> retr >> uid;
+            if (st != "0A" || uid < 10001 || uid == getuid()) continue;
+            int port = stoi(local.substr(local.rfind(':') + 1), nullptr, 16);
+            int s = socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in a{};
+            a.sin_family = AF_INET;
+            a.sin_port = htons(port);
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            if (connect(s, (sockaddr*)&a, sizeof a) == 0) found++;
+            close(s);
+        }
+    }
+    return found;
+}
+int main() {
+    if (fork() == 0) {
+        int found = 0;
+        auto stop = chrono::steady_clock::now() + chrono::seconds(5);
+        while (!found && chrono::steady_clock::now() < stop) {
+            found = scan();
+            usleep(1000);
+        }
+        cout << (found ? "REACHED A PORT" : "isolated") << flush;
+        _exit(0);
+    }
+    wait(nullptr);
 }
 '''),
     'cpp_kill_everything': ('cpp', '''#include <signal.h>
@@ -147,6 +200,17 @@ def main():
     client.trace('cpp_kill_everything')
     t.join()
     check("a program can't kill other visitors' programs", slow.get('stdout') == 'survived', slow.get('error'))
+    # A Java run's debugger port must not be reachable from a program running at the same
+    # time. The watcher starts first; the Java run starts while it's watching.
+    found = {}
+    t = threading.Thread(target=lambda: found.update(client.trace('cpp_find_jdwp')))
+    t.start()
+    time.sleep(2.0)
+    r = client.trace('java_slow')
+    t.join()
+    check("a program can't reach a Java run's debugger port", found.get('stdout') == 'isolated', found.get('stdout') or found.get('error'))
+    check('the Java run still finishes', r['stdout'].strip() == 'done', r.get('error'))
+
     status, health = client.health()
     check("a program can't kill the server", status == 200, status)
 
