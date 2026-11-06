@@ -5,6 +5,10 @@ import com.sun.jdi.request.*;
 
 import javax.tools.*;
 import java.io.*;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -201,13 +205,136 @@ public class Tracer {
 
     // ------------------------------------------------------------------ tracing
 
+    /**
+     * Starts the program under the debugger. The debugger listens on a loopback port and the
+     * program's JVM connects to it. Loopback is shared by every program in the container, so
+     * another visitor's program can connect too, possibly first. Each run has its own user, so
+     * before reading anything from a connection, its other end is looked up in the connection
+     * table: connections from other users are closed, and only the run's own JVM is handed to
+     * the debugger.
+     */
+    VirtualMachine launch(String mainClass, Path classes) throws Exception {
+        String uid = ownUid();
+        try (ServerSocket server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+            int port = server.getLocalPort();
+            String java = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
+            Process p = new ProcessBuilder(java,
+                    "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:" + port,
+                    "-cp", classes.toString(), "-Xmx256m", "-Xss32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1",
+                    "-XX:-UsePerfData", "-XX:+DisableAttachMechanism",
+                    "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", mainClass).start();
+            long deadline = System.currentTimeMillis() + 10_000;
+            while (p.isAlive()) {
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0) break;
+                server.setSoTimeout((int) Math.min(left, 1000));
+                Socket s;
+                try {
+                    s = server.accept();
+                } catch (SocketTimeoutException e) {
+                    continue;
+                }
+                if (!uid.equals(clientUid(s.getPort(), port))) {
+                    s.close();  // another user's process
+                    continue;
+                }
+                s.setSoTimeout(5000);
+                try {
+                    byte[] hello = "JDWP-Handshake".getBytes(StandardCharsets.US_ASCII);
+                    s.getOutputStream().write(hello);  // the debugger greets first, the JVM echoes it
+                    byte[] got = s.getInputStream().readNBytes(hello.length);
+                    if (!Arrays.equals(got, hello)) throw new IOException("bad handshake");
+                    s.setSoTimeout(0);
+                } catch (IOException e) {
+                    s.close();
+                    continue;
+                }
+                process = p;
+                return Bootstrap.virtualMachineManager().createVirtualMachine(new SocketConnection(s), p);
+            }
+            p.destroyForcibly();
+        }
+        throw new IllegalStateException("the program didn't connect to the debugger. Run it again");
+    }
+
+    static String ownUid() throws IOException {
+        for (String line : Files.readAllLines(Paths.get("/proc/self/status"))) {
+            if (line.startsWith("Uid:")) return line.split("\\s+")[1];
+        }
+        throw new IOException("no Uid in /proc/self/status");
+    }
+
+    /** Owner of the client socket connected from clientPort to our serverPort, from /proc/net/tcp*. */
+    static String clientUid(int clientPort, int serverPort) throws IOException {
+        for (String file : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
+            Path path = Paths.get(file);
+            if (!Files.exists(path)) continue;
+            List<String> lines = Files.readAllLines(path);
+            for (String line : lines.subList(1, lines.size())) {
+                // Fields: 1 local addr:port, 2 remote addr:port, 7 owner uid.
+                String[] f = line.trim().split("\\s+");
+                if (portOf(f[1]) == clientPort && portOf(f[2]) == serverPort) return f[7];
+            }
+        }
+        return null;
+    }
+
+    static int portOf(String addressAndPort) {
+        return Integer.parseInt(addressAndPort.substring(addressAndPort.lastIndexOf(':') + 1), 16);
+    }
+
+    /** A JDWP connection over a socket whose handshake is already done. */
+    static class SocketConnection extends com.sun.jdi.connect.spi.Connection {
+        final Socket socket;
+        final DataInputStream in;
+        final OutputStream out;
+        final Object writeLock = new Object();
+
+        SocketConnection(Socket socket) throws IOException {
+            this.socket = socket;
+            this.in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+            this.out = new BufferedOutputStream(socket.getOutputStream());
+        }
+
+        @Override
+        public byte[] readPacket() throws IOException {
+            int length;
+            try {
+                length = in.readInt();
+            } catch (EOFException e) {
+                return new byte[0];  // closed: JDI treats an empty packet as end of stream
+            }
+            if (length < 11) throw new IOException("bad JDWP packet length " + length);
+            byte[] packet = new byte[length];
+            packet[0] = (byte) (length >>> 24);
+            packet[1] = (byte) (length >>> 16);
+            packet[2] = (byte) (length >>> 8);
+            packet[3] = (byte) length;
+            in.readFully(packet, 4, length - 4);
+            return packet;
+        }
+
+        @Override
+        public void writePacket(byte[] packet) throws IOException {
+            synchronized (writeLock) {
+                out.write(packet);
+                out.flush();
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
+
+        @Override
+        public boolean isOpen() {
+            return !socket.isClosed();
+        }
+    }
+
     void trace(String mainClass, Path classes, String stdin) throws Exception {
-        LaunchingConnector connector = Bootstrap.virtualMachineManager().defaultConnector();
-        Map<String, Connector.Argument> args = connector.defaultArguments();
-        args.get("main").setValue(mainClass);
-        args.get("options").setValue("-cp " + classes + " -Xmx256m -Xss32m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8");
-        VirtualMachine vm = connector.launch(args);
-        process = vm.process();
+        VirtualMachine vm = launch(mainClass, classes);
         try (OutputStream in = process.getOutputStream()) {
             in.write(stdin.getBytes(StandardCharsets.UTF_8));
         } catch (IOException ignored) {

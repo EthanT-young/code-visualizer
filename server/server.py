@@ -46,68 +46,20 @@ JOB_TIMEOUT = 25  # seconds; the tracers stop programs themselves after 10 s
 # fork bomb stops here while the server keeps room under the container's pids limit).
 JOB_NPROC = int(os.environ.get('JOB_NPROC', '300'))
 active_sessions = set()
+busy_uids = set()  # sandbox users lent to a run, from before it starts until it's cleaned up
 sessions_lock = threading.Lock()
 # Inside the container (the Dockerfile sets this) the server owns every process except
 # tini, so it can sweep up processes that escaped their job. Never outside a container.
 IN_CONTAINER = os.environ.get('CODEVIZ_CONTAINER') == '1'
 # In the container the server runs as root (with only a few capabilities) and runs each
 # program as its own unprivileged user, so programs can't signal or tamper with the server
-# or with each other (Java runs also get the container alone; see RunGate). Each concurrent
-# run borrows one user from this pool.
+# or with each other. Each concurrent run borrows one user from this pool; what the user
+# leaves in /tmp is deleted before the next run gets it (clean_up_user).
 SANDBOX_UIDS = [10001 + i for i in range(MAX_JOBS)]
 SANDBOXED = IN_CONTAINER and os.geteuid() == 0
 job_users = queue.Queue()
 for _uid in SANDBOX_UIDS:
     job_users.put(_uid)
-
-
-class RunGate:
-    """Decides which runs may share the container.
-
-    Java needs the container to itself: JDI connects the tracer to the traced JVM over a
-    TCP port on loopback, and every process in the container shares that loopback, so a
-    program running at the same time could connect to the port and read or take over
-    another visitor's JVM. C++ (gdb drives the program directly, no socket) runs alongside
-    other C++ runs. A waiting Java run blocks new C++ runs, so Java isn't starved.
-    """
-
-    def __init__(self):
-        self.cond = threading.Condition()
-        self.shared = 0  # C++ runs in progress
-        self.exclusive = False  # a Java run in progress
-        self.waiting_exclusive = 0
-
-    def acquire(self, exclusive, timeout):
-        deadline = time.monotonic() + timeout
-        with self.cond:
-            if exclusive:
-                self.waiting_exclusive += 1
-            try:
-                while self.exclusive or (self.shared if exclusive else self.waiting_exclusive):
-                    left = deadline - time.monotonic()
-                    if left <= 0:
-                        return False
-                    self.cond.wait(left)
-                if exclusive:
-                    self.exclusive = True
-                else:
-                    self.shared += 1
-                return True
-            finally:
-                if exclusive:
-                    self.waiting_exclusive -= 1
-                    self.cond.notify_all()  # if it gave up, let blocked C++ runs go
-
-    def release(self, exclusive):
-        with self.cond:
-            if exclusive:
-                self.exclusive = False
-            else:
-                self.shared -= 1
-            self.cond.notify_all()
-
-
-run_gate = RunGate()
 
 
 class RateLimiter:
@@ -237,13 +189,42 @@ def kill_job(sid, uid):
 
 
 def hand_over(work, uid):
-    """Gives the job folder to the job's sandbox user."""
+    """Gives the job folder to the job's sandbox user, readable by nobody else."""
+    os.chmod(work, 0o700)
     if not SANDBOXED:
         return
     for root, dirs, files in os.walk(work):
         os.chown(root, uid, uid)
         for name in files:
             os.chown(os.path.join(root, name), uid, uid)
+
+
+def clean_up_user(uid):
+    """Container only: delete what a finished run's user left behind in the shared /tmp and
+    /dev/shm, and its System V IPC objects, so one run can't fill the disk or leave files for
+    later runs. Its processes are already gone (kill_job)."""
+    if not SANDBOXED:
+        return
+    for shared in (Path(tempfile.gettempdir()), Path('/dev/shm')):
+        try:
+            entries = list(os.scandir(shared))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.stat(follow_symlinks=False).st_uid != uid:
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path)  # doesn't follow symlinks
+                else:
+                    os.unlink(entry.path)
+            except OSError as e:
+                sys.stderr.write(f'cleanup {entry.path}: {e!r}\n')
+    try:  # run as the user, since only an object's owner (or CAP_IPC_OWNER) can remove it
+        subprocess.run(['ipcrm', '--all'], user=uid, group=uid, extra_groups=[], env=base_env(),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.stderr.write(f'ipcrm: {e!r}\n')
 
 
 def is_healthcheck(pid):
@@ -257,9 +238,12 @@ def is_healthcheck(pid):
 def reap_strays():
     """Container only: kill anything that isn't the server, a running job, or a healthcheck
     (e.g. a process that called setsid() to escape its job)."""
-    with sessions_lock:
-        keep = set(active_sessions)
-    kill_where(lambda pid: sandbox_owned(pid) and proc_session(pid) not in keep and not is_healthcheck(pid))
+    def stray(pid):
+        if not sandbox_owned(pid) or is_healthcheck(pid):
+            return False
+        with sessions_lock:  # read fresh each time: runs start while kill_where loops
+            return proc_session(pid) not in active_sessions and proc_uid(pid) not in busy_uids
+    kill_where(stray)
 
 
 def reaper_loop():
@@ -307,7 +291,7 @@ def trace_java(work, code, stdin, uid):
     (work / 'source.txt').write_text(code, encoding='utf-8')
     (work / 'stdin.txt').write_text(stdin, encoding='utf-8')
     hand_over(work, uid)
-    cmd = ['java', '-XX:+UseSerialGC', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
+    cmd = ['java', '-XX:+UseSerialGC', '-XX:-UsePerfData', '-XX:+DisableAttachMechanism', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
     _, out, err = run_limited(cmd, work, JOB_TIMEOUT, base_env(), uid)
     try:
         return json.loads(out.decode('utf-8'))
@@ -345,37 +329,28 @@ def trace_cpp(work, code, stdin, uid):
         raise TraceError('The program stopped before it could be traced. This happens when a program kills other processes or crashes the debugger.')
 
 
-def kill_all_sandboxed():
-    """Container only: kill every process a sandbox user owns. Called while a Java run holds
-    the container alone, so anything left is a straggler from an earlier run."""
-    if SANDBOXED:
-        kill_where(lambda pid: proc_uid(pid) in SANDBOX_UIDS)
-
-
 def trace(language, code, stdin):
-    busy = TraceError('The server is busy running other programs. Try again in a few seconds.')
-    exclusive = language == 'java'
-    deadline = time.monotonic() + 20
-    if not run_gate.acquire(exclusive, 20):
-        raise busy
     try:
-        try:
-            uid = job_users.get(timeout=max(0.1, deadline - time.monotonic()))  # also limits how many programs run at once
-        except queue.Empty:
-            raise busy
+        uid = job_users.get(timeout=20)  # also limits how many programs run at once
+    except queue.Empty:
+        raise TraceError('The server is busy running other programs. Try again in a few seconds.')
+    try:
+        with sessions_lock:
+            busy_uids.add(uid)
         work = JOBS_DIR / uuid.uuid4().hex
         try:
-            if exclusive:
-                kill_all_sandboxed()
-            work.mkdir(parents=True)
-            if exclusive:
+            work.mkdir()
+            if language == 'java':
                 return trace_java(work, code, stdin, uid)
             return trace_cpp(work, code, stdin, uid)
         finally:
             shutil.rmtree(work, ignore_errors=True)
-            job_users.put(uid)
+            kill_job(-1, uid)  # anything of this user's still alive (run_limited already did this)
+            clean_up_user(uid)
     finally:
-        run_gate.release(exclusive)
+        with sessions_lock:
+            busy_uids.discard(uid)
+        job_users.put(uid)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +475,7 @@ def main():
         sys.exit('MAX_JOBS can be at most 4: the image has four sandbox users (10001-10004).')
     listen = os.environ.get('LISTEN', '8080')
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(JOBS_DIR, 0o711)  # runs can enter their own folder but not list the others
     if listen.startswith('unix:'):
         path = listen[5:]
         try:

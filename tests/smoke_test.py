@@ -4,7 +4,7 @@ Usage (Python 3.8+, no packages needed):
     python3 tests/smoke_test.py --socket socket/codeviz.sock    # the Caddy setup
     python3 tests/smoke_test.py --url http://localhost:8080     # compose.local.yml
 
-It sends about 14 runs, which counts toward your own rate limit (30 per 10 minutes by default).
+It sends about 17 runs, which counts toward your own rate limit (30 per 10 minutes by default).
 """
 import argparse
 import http.client
@@ -74,11 +74,14 @@ int main() {
 }
 '''),
     # Watches for a listening TCP port owned by another sandbox user (the Java tracer's
-    # debugger port) and connects to it. The watching runs in a forked child, which the
+    # debugger port), connects, completes the debugger handshake and holds the connection,
+    # posing as the program being debugged. The watching runs in a forked child, which the
     # debugger doesn't step through, so it isn't cut short by the step limit.
     'cpp_find_jdwp': ('cpp', '''#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+vector<int> held;
+map<string, int> tries;
 int scan() {
     int found = 0;
     for (string file : {"/proc/net/tcp", "/proc/net/tcp6"}) {
@@ -91,14 +94,19 @@ int scan() {
             unsigned uid;
             ss >> sl >> local >> remote >> st >> queues >> timer >> retr >> uid;
             if (st != "0A" || uid < 10001 || uid == getuid()) continue;
+            if (++tries[local] > 200) continue;
             int port = stoi(local.substr(local.rfind(':') + 1), nullptr, 16);
             int s = socket(AF_INET, SOCK_STREAM, 0);
+            timeval tv{0, 200000};
+            setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);  // don't hang on a full backlog
             sockaddr_in a{};
             a.sin_family = AF_INET;
             a.sin_port = htons(port);
             a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            if (connect(s, (sockaddr*)&a, sizeof a) == 0) found++;
-            close(s);
+            if (connect(s, (sockaddr*)&a, sizeof a) != 0) { close(s); continue; }
+            write(s, "JDWP-Handshake", 14);
+            held.push_back(s);
+            found++;
         }
     }
     return found;
@@ -107,14 +115,30 @@ int main() {
     if (fork() == 0) {
         int found = 0;
         auto stop = chrono::steady_clock::now() + chrono::seconds(5);
-        while (!found && chrono::steady_clock::now() < stop) {
-            found = scan();
-            usleep(1000);
+        while (chrono::steady_clock::now() < stop) {
+            found += scan();
+            usleep(500);
         }
-        cout << (found ? "REACHED A PORT" : "isolated") << flush;
+        cout << "connected " << found << " times" << flush;
         _exit(0);
     }
     wait(nullptr);
+}
+'''),
+    'cpp_leave_file': ('cpp', '''int main() {
+    ofstream("/tmp/left-behind") << "secret";
+    ofstream("/dev/shm/left-behind") << "secret";
+    cout << "written";
+}
+'''),
+    'cpp_find_file': ('cpp', '''int main() {
+    bool left = access("/tmp/left-behind", F_OK) == 0 || access("/dev/shm/left-behind", F_OK) == 0;
+    cout << (left ? "FOUND LEFTOVER" : "clean");
+}
+'''),
+    'cpp_list_jobs': ('cpp', '''#include <dirent.h>
+int main() {
+    cout << (opendir("/tmp/codeviz-jobs") ? "LISTABLE" : "private");
 }
 '''),
     'cpp_kill_everything': ('cpp', '''#include <signal.h>
@@ -200,16 +224,25 @@ def main():
     client.trace('cpp_kill_everything')
     t.join()
     check("a program can't kill other visitors' programs", slow.get('stdout') == 'survived', slow.get('error'))
-    # A Java run's debugger port must not be reachable from a program running at the same
-    # time. The watcher starts first; the Java run starts while it's watching.
+    # A program running alongside a Java run can connect to its debugger port (loopback is
+    # shared) and pose as the program being debugged. The tracer must drop such connections
+    # and still trace the real program.
     found = {}
     t = threading.Thread(target=lambda: found.update(client.trace('cpp_find_jdwp')))
     t.start()
     time.sleep(2.0)
     r = client.trace('java_slow')
     t.join()
-    check("a program can't reach a Java run's debugger port", found.get('stdout') == 'isolated', found.get('stdout') or found.get('error'))
-    check('the Java run still finishes', r['stdout'].strip() == 'done', r.get('error'))
+    check("a program can't take over a Java run's debugger", r['ok'] and r['stdout'].strip() == 'done' and len(r['steps']) > 10,
+          f"watcher: {found.get('stdout')!r}, java: {r.get('stdout')!r} {r.get('error')}")
+    r = client.trace('java_slow')
+    check('Java works again afterwards', r['ok'] and r['stdout'].strip() == 'done', r.get('error'))
+
+    client.trace('cpp_leave_file')
+    r = client.trace('cpp_find_file')
+    check('files a run leaves in /tmp are deleted', r['stdout'] == 'clean', r['stdout'] or r.get('error'))
+    r = client.trace('cpp_list_jobs')
+    check("a run can't list other runs' folders", r['stdout'] == 'private', r['stdout'] or r.get('error'))
 
     status, health = client.health()
     check("a program can't kill the server", status == 200, status)

@@ -102,8 +102,8 @@ Visitors are told how long to wait when they hit the limit. Behind Caddy, the vi
 Anyone who can open the page can run Java and C++ code on your server, so it runs locked down:
 
 - No network and a read-only filesystem for the whole container
-- Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. Java runs get the container to themselves: the Java tracer talks to the program over a loopback port, which a program running alongside could otherwise connect to, so a Java run waits for other runs to finish (and leftover processes are killed) before it starts. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
-- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 C++ programs or 1 Java program traced at a time, each limited to 300 processes and 20 MB files
+- Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. Run folders are readable only by their own run, and whatever a run leaves in `/tmp` or `/dev/shm` is deleted when it ends. The Java tracer connects to the program over a loopback port that other programs can also reach, so it checks which user is on the other end of each connection and closes any that isn't its own run's. The server starts as root with only the five capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
+- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 programs traced at a time (`MAX_JOBS`), each limited to 300 processes and 20 MB files
 - Each run: 10 seconds of program time, 3,000 steps, 100 KB of output, 50 KB of code. Programs that run longer are stopped, and the steps recorded so far are still shown.
 - Everything a program starts is killed when its run ends, including fork bombs and processes that try to detach; `tini` cleans up the rest
 - Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`; `tests/smoke_test.py` repeats the important ones
@@ -111,6 +111,8 @@ Anyone who can open the page can run Java and C++ code on your server, so it run
 ### What these limits don't cover
 
 - **The kernel is shared.** Docker containers share the host's Linux kernel, so a kernel bug could let code escape. For stronger isolation, run the container under [gVisor](https://gvisor.dev) or on a separate VM.
+- **Runs share the container while they run.** A program can fill the shared 512 MB `/tmp` or use up memory for the 10 seconds it runs, which can make a run happening at the same time fail. Its files are deleted when it ends.
+- **One deployment per host.** The 300-process limit is counted per user ID across the whole host, and every copy of this container uses the same IDs (10001 and up), so a fork bomb in one copy can make runs fail in another copy on the same machine.
 - **Shared links run code when opened.** Python runs in the visitor's browser; Java and C++ run on your server like any other run.
 - **Python loads from jsDelivr.** If that CDN were compromised it could run code on the page. The version is pinned; self-hosting Pyodide would remove the dependency.
 - **The password is HTTP basic auth.** It's sent with every request, so use it only behind HTTPS (Caddy does this), and pick a long random password since wrong guesses aren't limited.
