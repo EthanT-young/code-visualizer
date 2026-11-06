@@ -213,7 +213,7 @@ public class Tracer {
      * table: connections from other users are closed, and only the run's own JVM is handed to
      * the debugger.
      */
-    VirtualMachine launch(String mainClass, Path classes) throws Exception {
+    VirtualMachine launch(String mainClass, Path classes, long deadline) throws Exception {
         String uid = ownUid();
         try (ServerSocket server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
             int port = server.getLocalPort();
@@ -222,39 +222,55 @@ public class Tracer {
                     "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:" + port,
                     "-cp", classes.toString(), "-Xmx256m", "-Xss32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1",
                     "-XX:-UsePerfData", "-XX:+DisableAttachMechanism",
-                    "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", mainClass).start();
-            long deadline = System.currentTimeMillis() + 10_000;
-            while (p.isAlive()) {
-                long left = deadline - System.currentTimeMillis();
-                if (left <= 0) break;
-                server.setSoTimeout((int) Math.min(left, 1000));
-                Socket s;
-                try {
-                    s = server.accept();
-                } catch (SocketTimeoutException e) {
-                    continue;
+                    "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", mainClass)
+                    // Input comes straight from the file: writing it to a pipe would block once
+                    // the pipe is full, since the program is paused until the debugger connects.
+                    .redirectInput(stdinFile())
+                    .start();
+            Socket s = null;
+            try {
+                while (p.isAlive()) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0) break;
+                    server.setSoTimeout((int) Math.min(left, 1000));
+                    try {
+                        s = server.accept();
+                    } catch (SocketTimeoutException e) {
+                        continue;
+                    }
+                    // The program's JVM connects from 127.0.0.1; anything else isn't it.
+                    boolean fromLoopback = s.getInetAddress().getHostAddress().equals("127.0.0.1");
+                    if (!fromLoopback || !uid.equals(clientUid(s.getPort(), port))) {
+                        s.close();  // another user's process
+                        continue;
+                    }
+                    s.setSoTimeout(5000);
+                    try {
+                        byte[] hello = "JDWP-Handshake".getBytes(StandardCharsets.US_ASCII);
+                        s.getOutputStream().write(hello);  // the debugger greets first, the JVM echoes it
+                        byte[] got = s.getInputStream().readNBytes(hello.length);
+                        if (!Arrays.equals(got, hello)) throw new IOException("bad handshake");
+                        s.setSoTimeout(0);
+                    } catch (IOException e) {
+                        s.close();
+                        continue;
+                    }
+                    process = p;
+                    return Bootstrap.virtualMachineManager().createVirtualMachine(new SocketConnection(s), p);
                 }
-                if (!uid.equals(clientUid(s.getPort(), port))) {
-                    s.close();  // another user's process
-                    continue;
-                }
-                s.setSoTimeout(5000);
-                try {
-                    byte[] hello = "JDWP-Handshake".getBytes(StandardCharsets.US_ASCII);
-                    s.getOutputStream().write(hello);  // the debugger greets first, the JVM echoes it
-                    byte[] got = s.getInputStream().readNBytes(hello.length);
-                    if (!Arrays.equals(got, hello)) throw new IOException("bad handshake");
-                    s.setSoTimeout(0);
-                } catch (IOException e) {
-                    s.close();
-                    continue;
-                }
-                process = p;
-                return Bootstrap.virtualMachineManager().createVirtualMachine(new SocketConnection(s), p);
+            } catch (Exception | Error e) {
+                if (s != null) s.close();
+                p.destroyForcibly();
+                throw e;
             }
             p.destroyForcibly();
         }
         throw new IllegalStateException("the program didn't connect to the debugger. Run it again");
+    }
+
+    File stdinFile() {
+        Path file = work.resolve("stdin.txt");
+        return Files.exists(file) ? file.toFile() : new File("/dev/null");
     }
 
     static String ownUid() throws IOException {
@@ -264,8 +280,14 @@ public class Tracer {
         throw new IOException("no Uid in /proc/self/status");
     }
 
-    /** Owner of the client socket connected from clientPort to our serverPort, from /proc/net/tcp*. */
+    /**
+     * Owner of the client socket 127.0.0.1:clientPort -> 127.0.0.1:serverPort, from
+     * /proc/net/tcp* (as IPv4 or IPv4-mapped IPv6). Matches the whole address pair, which
+     * only one socket can have; returns null if there isn't exactly one match.
+     */
     static String clientUid(int clientPort, int serverPort) throws IOException {
+        String found = null;
+        int matches = 0;
         for (String file : new String[]{"/proc/net/tcp", "/proc/net/tcp6"}) {
             Path path = Paths.get(file);
             if (!Files.exists(path)) continue;
@@ -273,10 +295,19 @@ public class Tracer {
             for (String line : lines.subList(1, lines.size())) {
                 // Fields: 1 local addr:port, 2 remote addr:port, 7 owner uid.
                 String[] f = line.trim().split("\\s+");
-                if (portOf(f[1]) == clientPort && portOf(f[2]) == serverPort) return f[7];
+                if (isLoopback4(f[1]) && portOf(f[1]) == clientPort && isLoopback4(f[2]) && portOf(f[2]) == serverPort) {
+                    found = f[7];
+                    matches++;
+                }
             }
         }
-        return null;
+        return matches == 1 ? found : null;
+    }
+
+    /** 127.0.0.1 as /proc/net/tcp writes it (little-endian hex), or IPv4-mapped in tcp6. */
+    static boolean isLoopback4(String addressAndPort) {
+        String address = addressAndPort.substring(0, addressAndPort.lastIndexOf(':'));
+        return address.equals("0100007F") || address.equals("0000000000000000FFFF00000100007F");
     }
 
     static int portOf(String addressAndPort) {
@@ -298,13 +329,10 @@ public class Tracer {
 
         @Override
         public byte[] readPacket() throws IOException {
-            int length;
-            try {
-                length = in.readInt();
-            } catch (EOFException e) {
-                return new byte[0];  // closed: JDI treats an empty packet as end of stream
-            }
-            if (length < 11) throw new IOException("bad JDWP packet length " + length);
+            int first = in.read();
+            if (first < 0) return new byte[0];  // end of stream, as the SPI asks
+            int length = (first << 24) | (in.readUnsignedByte() << 16) | (in.readUnsignedShort());
+            if (length < 11 || length > 64 << 20) throw new IOException("bad JDWP packet length " + length);
             byte[] packet = new byte[length];
             packet[0] = (byte) (length >>> 24);
             packet[1] = (byte) (length >>> 16);
@@ -334,19 +362,16 @@ public class Tracer {
     }
 
     void trace(String mainClass, Path classes, String stdin) throws Exception {
-        VirtualMachine vm = launch(mainClass, classes);
-        try (OutputStream in = process.getOutputStream()) {
-            in.write(stdin.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException ignored) {
-            // program may not read stdin
-        }
+        // The budget includes starting the program, so a slow start can't push the whole run
+        // past the server's own timeout.
+        long deadline = System.currentTimeMillis() + TIME_BUDGET_MS;
+        VirtualMachine vm = launch(mainClass, classes, deadline);
 
         EventRequestManager erm = vm.eventRequestManager();
         ClassPrepareRequest prep = erm.createClassPrepareRequest();
         for (String p : JDK_PACKAGES) prep.addClassExclusionFilter(p);
         prep.enable();
 
-        long deadline = System.currentTimeMillis() + TIME_BUDGET_MS;
         EventQueue queue = vm.eventQueue();
         boolean running = true;
         ThreadReference mainThread = null;

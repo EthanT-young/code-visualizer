@@ -111,7 +111,7 @@ Anyone who can open the page can run Java and C++ code on your server, so it run
 ### What these limits don't cover
 
 - **The kernel is shared.** Docker containers share the host's Linux kernel, so a kernel bug could let code escape. For stronger isolation, run the container under [gVisor](https://gvisor.dev) or on a separate VM.
-- **Runs share the container while they run.** A program can fill the shared 512 MB `/tmp` or use up memory for the 10 seconds it runs, which can make a run happening at the same time fail. Its files are deleted when it ends.
+- **Runs share the container while they run.** For the 10 seconds it runs, a program can use up the shared 512 MB `/tmp`, memory, CPU, or the container's loopback ports (which the Java tracer needs), and make a run happening at the same time fail. It can't read or change that run. Its files are deleted when it ends. Separating runs fully would need a network namespace per run, which needs more privileges than this container has; gVisor or a VM is the stronger option.
 - **One deployment per host.** The 300-process limit is counted per user ID across the whole host, and every copy of this container uses the same IDs (10001 and up), so a fork bomb in one copy can make runs fail in another copy on the same machine.
 - **Shared links run code when opened.** Python runs in the visitor's browser; Java and C++ run on your server like any other run.
 - **Python loads from jsDelivr.** If that CDN were compromised it could run code on the page. The version is pinned; self-hosting Pyodide would remove the dependency.
