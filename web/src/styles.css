@@ -129,40 +129,13 @@ h2 { margin: 0 0 8px; font-size: 0.95rem; font-weight: 700; color: var(--ink-sof
   overflow: hidden;
   background: var(--panel);
 }
-.editor .CodeMirror {
-  height: 100%;
-  font-family: var(--font-code);
-  font-size: 14px;
-  line-height: 1.6;
-  font-variant-ligatures: none;
-  background: var(--panel);
-  color: var(--ink);
-}
-.cm-s-board .CodeMirror-gutters { background: var(--panel); border-right: 1px solid var(--rule); }
-.cm-s-board .CodeMirror-linenumber { color: var(--ink-soft); padding: 0 10px 0 6px; }
-.cm-s-board .CodeMirror-cursor { border-left: 2px solid var(--ink); }
-.cm-s-board .CodeMirror-selected,
-.cm-s-board.CodeMirror-focused .CodeMirror-selected { background: color-mix(in srgb, var(--p0) 22%, transparent); }
-.cm-s-board .cm-keyword { color: var(--syn-keyword); font-weight: 600; }
-.cm-s-board .cm-def { color: var(--syn-def); font-weight: 600; }
-.cm-s-board .cm-string { color: var(--syn-string); }
-.cm-s-board .cm-number { color: var(--syn-number); }
-.cm-s-board .cm-comment { color: var(--syn-comment); font-style: italic; }
-.cm-s-board .cm-builtin { color: var(--syn-builtin); }
-.cm-s-board .cm-variable-2, .cm-s-board .cm-variable { color: var(--ink); }
-.cm-s-board .cm-operator, .cm-s-board .cm-punctuation { color: var(--ink-soft); }
-.cm-s-board .cm-property { color: var(--ink); }
-.cm-s-board .cm-meta { color: var(--syn-builtin); }
-.cm-s-board .CodeMirror-matchingbracket { color: inherit !important; text-decoration: underline 2px var(--p0); }
+.editor .cm-editor { height: 100%; }
 
-/* The highlighter. */
-.cm-s-board .line-next {
-  background: var(--hl);
-  box-shadow: inset 4px 0 0 var(--ink);
-}
-.cm-s-board .line-next .CodeMirror-line span { color: var(--hl-ink); }
-.cm-s-board .line-prev { background: var(--hl-faint); }
-.cm-s-board .line-error { background: var(--red-faint); box-shadow: inset 4px 0 0 var(--red); }
+/* The highlighter: the line about to run, the line that just ran, and errors. */
+.cm-line.line-next { background: var(--hl); box-shadow: inset 4px 0 0 var(--ink); }
+.cm-line.line-next, .cm-line.line-next * { color: var(--hl-ink) !important; }
+.cm-line.line-prev { background: var(--hl-faint); }
+.cm-line.line-error { background: var(--red-faint); box-shadow: inset 4px 0 0 var(--red); }
 
 /* ---------- input + output ---------- */
 
@@ -192,7 +165,7 @@ h2 { margin: 0 0 8px; font-size: 0.95rem; font-weight: 700; color: var(--ink-sof
   padding: 8px 12px;
 }
 .console h2 { margin-bottom: 4px; }
-#stdout {
+.console pre {
   margin: 0;
   max-height: 140px;
   min-height: 1.6em;
@@ -211,7 +184,7 @@ h2 { margin: 0 0 8px; font-size: 0.95rem; font-weight: 700; color: var(--ink-sof
   align-items: center;
 }
 .controls .play { min-width: 5.5em; background: var(--ink); color: var(--panel); font-weight: 700; }
-#scrub { flex: 1 1 140px; accent-color: var(--ink); min-width: 120px; }
+.scrub { flex: 1 1 140px; accent-color: var(--ink); min-width: 120px; }
 .counter { font-family: var(--font-code); font-size: 13px; color: var(--ink-soft); min-width: 6.5em; text-align: right; }
 
 .status {
@@ -297,7 +270,7 @@ table { border-collapse: collapse; }
   white-space: nowrap;
   cursor: default;
 }
-.chip.hl, .card.hl > figcaption .name, .ll-node.hl .node-box, .nested.hl { outline: 3px solid var(--p0); outline-offset: 1px; }
+.chip.hl, .card.hl > figcaption .names, .ll-node.hl .node-box, .nested.hl { outline: 3px solid var(--p0); outline-offset: 1px; }
 .tnode.hl circle { stroke: var(--p0); stroke-width: 4; }
 
 /* Data column cards */

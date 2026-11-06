@@ -89,13 +89,30 @@ Anyone who can open the page can run Java and C++ code on your server, inside th
 - Java and C++ don't step into library code (sorting, `HashMap` internals), so a comparator or lambda passed to a library call isn't stepped through in C++.
 - Containers show their first 80 items; each step shows up to 300 objects.
 - C++ pointers to plain values (like `int*`) show as addresses; pointers to structs and classes are followed.
-- The editor and fonts load from cdnjs and Google Fonts; Python loads from jsDelivr on first use (about 10 MB, cached afterwards).
+- Fonts load from Google Fonts; Python loads from jsDelivr on first use (about 10 MB, cached afterwards).
 
 ## Project layout
 
 ```
-public/            the page (HTML, CSS, JS) and the Python tracer that runs in the browser
-server/server.py   web server: serves the page and runs Java/C++ traces
+web/               the React site (Vite): editor, step controls and all the drawings
+  src/App.jsx        page state: running code, stepping, keyboard shortcuts
+  src/components/    CodeEditor (CodeMirror 6), CallStack, DataPanel, Values, StepControls, Header
+  src/lib/           examples, trace helpers, the runner, share links
+  public/            the Python tracer and its Web Worker (run in the browser)
+server/server.py   web server: serves the built site and runs Java/C++ traces
 server/java/       JDI tracer for Java
 server/cpp/        GDB tracer, LeetCode prelude headers
 ```
+
+## Working on the site
+
+The Docker build compiles the React site for you. To edit it with instant reloads:
+
+```bash
+docker compose -f compose.local.yml up -d --build   # the server, for Java and C++ runs
+cd web
+npm install
+npm run dev                                         # open the URL it prints
+```
+
+`npm run dev` sends Java and C++ runs to the server on port 8080. Run `docker compose -f compose.local.yml up -d --build` again to put your changes into the container.

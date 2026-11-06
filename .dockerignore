@@ -4,3 +4,5 @@ socket
 **/*.gch
 **/classes
 .env
+**/node_modules
+**/dist

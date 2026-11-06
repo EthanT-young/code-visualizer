@@ -1,4 +1,14 @@
-# Code Visualizer: the page plus the Java (JDI) and C++ (GDB) tracers.
+# Code Visualizer: the React page plus the Java (JDI) and C++ (GDB) tracers.
+
+# 1. Build the React site.
+FROM node:22-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# 2. The server and tracers, serving the built site.
 FROM eclipse-temurin:21-jdk-noble
 
 RUN apt-get update \
@@ -6,7 +16,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY public/ ./public/
+COPY --from=web /web/dist/ ./public/
 COPY server/ ./server/
 
 # Compile the Java tracer and precompile the C++ prelude (cuts each C++ compile

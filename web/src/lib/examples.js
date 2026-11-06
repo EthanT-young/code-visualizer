@@ -1,13 +1,12 @@
-'use strict';
-/* Example programs for each language. Loaded before app.js. */
+// Example programs for each language, plus how each language is edited and run.
 
-window.LANGUAGES = {
-  java: { label: 'Java', mode: 'text/x-java', server: true },
-  cpp: { label: 'C++', mode: 'text/x-c++src', server: true },
-  python: { label: 'Python', mode: 'python', server: false },
+export const LANGUAGES = {
+  java: { label: 'Java', server: true, nil: 'null' },
+  cpp: { label: 'C++', server: true, nil: 'nullptr' },
+  python: { label: 'Python', server: false, nil: 'None' },
 };
 
-window.EXAMPLES = {
+export const EXAMPLES = {
   java: [
     {
       name: 'Two Sum (hash map)',

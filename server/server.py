@@ -62,10 +62,11 @@ CONTENT_TYPES = {
 
 CSP = "; ".join([
     "default-src 'self'",
-    "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net 'wasm-unsafe-eval'",
+    "script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'",  # Pyodide loads from jsDelivr
     "worker-src 'self'",
     "connect-src 'self' https://cdn.jsdelivr.net",
-    "style-src 'self' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+    # CodeMirror 6 injects its own styles; React escapes all content, so inline CSS is low risk.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     "img-src 'self' data:",
     "frame-ancestors 'self'",
