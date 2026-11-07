@@ -38,14 +38,14 @@ The local version has the same lockdown as the hosted one, but it needs a networ
 
 ## Host it behind Caddy
 
-The compose file runs the container with **no network at all**, so code that visitors run can't reach the internet or your home network. Caddy talks to it through a Unix socket.
+The compose file runs the container with no network at all, so code that visitors run can't reach the internet or your home network. Caddy talks to it through a Unix socket.
 
 ```bash
 mkdir -p socket
 docker compose up -d --build
 ```
 
-**Caddy installed on the host:**
+If Caddy is installed on the host:
 
 ```
 code.yourdomain.com {
@@ -53,7 +53,7 @@ code.yourdomain.com {
 }
 ```
 
-**Caddy in Docker:** mount the same folder into the Caddy container (for example `- /absolute/path/to/code-visualizer/socket:/codeviz`) and use `reverse_proxy unix//codeviz/codeviz.sock`.
+If Caddy runs in Docker, mount the same folder into the Caddy container (for example `- /absolute/path/to/code-visualizer/socket:/codeviz`) and use `reverse_proxy unix//codeviz/codeviz.sock`.
 
 To host it under a path on an existing site instead of a subdomain:
 
@@ -110,22 +110,30 @@ Anyone who can open the page can run Java and C++ code on your server, so it run
 
 ### What these limits don't cover
 
-- **The kernel is shared.** Docker containers share the host's Linux kernel, so a kernel bug could let code escape. For stronger isolation, run the container under [gVisor](https://gvisor.dev) or on a separate VM.
-- **Runs share the container while they run.** For the 10 seconds it runs, a program can use up the shared 512 MB `/tmp`, memory, CPU, or the container's loopback ports (which the Java tracer needs), and make a run happening at the same time fail. It can't read or change that run. Its files are deleted when it ends. Separating runs fully would need a network namespace per run, which needs more privileges than this container has; gVisor or a VM is the stronger option.
-- **One deployment per host.** The 300-process limit is counted per user ID across the whole host, and every copy of this container uses the same IDs (10001 and up), so a fork bomb in one copy can make runs fail in another copy on the same machine.
-- **Shared links run code when opened.** Python runs in the visitor's browser; Java and C++ run on your server like any other run.
-- **Python loads from jsDelivr.** If that CDN were compromised it could run code on the page. The version is pinned; self-hosting Pyodide would remove the dependency.
-- **The password is HTTP basic auth.** It's sent with every request, so use it only behind HTTPS (Caddy does this), and pick a long random password since wrong guesses aren't limited.
+- Docker containers share the host's Linux kernel, so a kernel bug could let code escape. For stronger isolation, run the container on a separate VM. [gVisor](https://gvisor.dev) is another option, but on an ARM64 server it broke C++ tracing: GDB crashed every program at its first breakpoint. Java still worked under it.
+- Runs share the container while they run. For the 10 seconds it runs, a program can use up the shared 512 MB `/tmp`, memory, CPU, or the container's loopback ports (which the Java tracer needs), and make a run happening at the same time fail. It can't read or change that run. Its files are deleted when it ends. Separating runs fully would need a network namespace per run, which needs more privileges than this container has. A separate VM is the stronger option.
+- Run one copy per host. The 300-process limit is counted per user ID across the whole host, and every copy of this container uses the same IDs (10001 and up), so a fork bomb in one copy can make runs fail in another copy on the same machine.
+- Opening a shared link runs its code. Python runs in the visitor's browser; Java and C++ run on your server like any other run.
+- Python loads from jsDelivr. If that CDN were compromised it could run code on the page. The version is pinned; self-hosting Pyodide would remove the dependency.
+- The password is HTTP basic auth. It's sent with every request, so use it only behind HTTPS (Caddy does this), and pick a long random password since wrong guesses aren't limited.
 
 ## Writing code for it
 
-**Java.** Include a `main` method that calls your solution (see the examples). `java.util.*`, `java.util.function.*` and `java.util.stream.*` are imported for you. `ListNode` and `TreeNode` are provided like on LeetCode, with `ListNode.of(1, 2, 3)` and `TreeNode.of(3, 9, 20, null, null, 15, 7)` to build test input. Define your own and they're left out.
+### Java
 
-**C++.** `<bits/stdc++.h>` and `using namespace std` are included, like on LeetCode. `ListNode` and `TreeNode` are provided, with `buildList({1, 2, 3})` and `buildTree({3, 9, 20, null, null, 15, 7})`.
+Include a `main` method that calls your solution (see the examples). `java.util.*`, `java.util.function.*` and `java.util.stream.*` are imported for you. `ListNode` and `TreeNode` are provided like on LeetCode, with `ListNode.of(1, 2, 3)` and `TreeNode.of(3, 9, 20, null, null, 15, 7)` to build test input. Define your own and they're left out.
 
-**Python.** `List`, `Optional`, `deque`, `defaultdict`, `Counter`, `heapq`, `bisect` and `math` are preloaded. `ListNode`, `TreeNode`, `build_list([1, 2, 3])` and `build_tree([3, 9, 20, None, None, 15, 7])` are provided.
+### C++
 
-**Pointers.** Integer variables named `i`, `j`, `k`, `l`, `r`, `lo`, `hi`, `low`, `high`, `mid`, `left`, `right`, `start`, `end`, `slow`, `fast`, `idx`, `ptr`, `pos`, `top`, `front`, `rear`, `p`, `q`, `cur`, `curr` (or ending in `_idx`, `_ptr`, `_left`…) are drawn as arrows into arrays and strings in the same function. Change `POINTER_RE` in `web/src/lib/trace.js` to add your own names.
+`<bits/stdc++.h>` and `using namespace std` are included, like on LeetCode. `ListNode` and `TreeNode` are provided, with `buildList({1, 2, 3})` and `buildTree({3, 9, 20, null, null, 15, 7})`.
+
+### Python
+
+`List`, `Optional`, `deque`, `defaultdict`, `Counter`, `heapq`, `bisect` and `math` are preloaded. `ListNode`, `TreeNode`, `build_list([1, 2, 3])` and `build_tree([3, 9, 20, None, None, 15, 7])` are provided.
+
+### Pointers
+
+Integer variables named `i`, `j`, `k`, `l`, `r`, `lo`, `hi`, `low`, `high`, `mid`, `left`, `right`, `start`, `end`, `slow`, `fast`, `idx`, `ptr`, `pos`, `top`, `front`, `rear`, `p`, `q`, `cur`, `curr` (or ending in `_idx`, `_ptr`, `_left`…) are drawn as arrows into arrays and strings in the same function. Change `POINTER_RE` in `web/src/lib/trace.js` to add your own names.
 
 ## Known limitations
 
