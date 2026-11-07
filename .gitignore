@@ -8,3 +8,6 @@ socket/
 server/java/classes/
 node_modules/
 dist/
+
+# Server-local opt-in marker for an auto-deployer; never committed.
+.deploy

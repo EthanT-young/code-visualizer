@@ -169,6 +169,23 @@ def kill_where(should_kill):
                 pass
 
 
+def kill_as_user(uid):
+    """Kills every process a sandbox user owns in one step: a helper running as that user
+    calls kill(-1, SIGKILL), which the kernel delivers to all of the user's processes while
+    holding the task list lock, so a fork bomb can't fork its way out of it. kill_where's
+    /proc scan can lose that race on a slow or CPU-capped host."""
+    for _ in range(3):
+        if not any(proc_uid(int(n)) == uid for n in os.listdir('/proc') if n.isdigit()):
+            return
+        try:
+            subprocess.run([sys.executable, '-I', '-S', '-c',
+                            'import os, signal\ntry:\n    os.kill(-1, signal.SIGKILL)\nexcept ProcessLookupError:\n    pass'],
+                           user=uid, group=uid, extra_groups=[], env=base_env(), start_new_session=True,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except (OSError, subprocess.SubprocessError) as e:
+            sys.stderr.write(f'kill_as_user: {e!r}\n')
+
+
 def proc_uid(pid):
     try:
         return os.stat(f'/proc/{pid}').st_uid
@@ -184,6 +201,8 @@ def kill_job(sid, uid):
     """Kills everything a job started: its session (gdb runs programs in their own process
     group, but they stay in the session) and, in the container, everything its user owns,
     including processes that left the session with setsid()."""
+    if SANDBOXED:
+        kill_as_user(uid)
     kill_where(lambda pid: proc_session(pid) == sid or (SANDBOXED and proc_uid(pid) == uid))
 
 
@@ -252,6 +271,11 @@ def reap_strays():
         with sessions_lock:  # read fresh each time: runs start while kill_where loops
             return proc_session(pid) not in active_sessions and proc_uid(pid) not in busy_uids
     kill_where(stray)
+    if SANDBOXED:  # a fork bomb that outlived its run: kill_where alone can lose that race
+        for uid in SANDBOX_UIDS:
+            with sessions_lock:  # held so a new run can't take this user meanwhile
+                if uid not in busy_uids:
+                    kill_as_user(uid)
 
 
 def reaper_loop():

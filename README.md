@@ -103,7 +103,7 @@ Anyone who can open the page can run Java and C++ code on your server, so it run
 
 - No network and a read-only filesystem for the whole container
 - Each program runs as its own unprivileged user (uid 10001 or 10002, one per concurrent run) with no Linux capabilities, so it can't signal or modify the server or another visitor's program. Run folders are readable only by their own run, and whatever a run leaves in `/tmp`, `/dev/shm` and `/dev/mqueue`, and its shared memory, is deleted when it ends. The Java tracer connects to the program over a loopback port that other programs can also reach, so it checks which user is on the other end of each connection and closes any that isn't its own run's. The server starts as root with only the six capabilities it needs to switch users and clean up (listed in `docker-compose.yml`).
-- 1 GB memory, 512 processes, 2 CPUs for the whole container; 2 programs traced at a time (`MAX_JOBS`), each limited to 300 processes and 20 MB files
+- 1 GB memory, 512 processes, 1 CPU for the whole container (`compose.local.yml` allows 2); 2 programs traced at a time (`MAX_JOBS`), each limited to 300 processes and 20 MB files
 - Each run: 10 seconds of program time, 3,000 steps, 100 KB of output, 50 KB of code. Programs that run longer are stopped, and the steps recorded so far are still shown.
 - Everything a program starts is killed when its run ends, including fork bombs and processes that try to detach; `tini` cleans up the rest
 - Tested against a fork bomb, a memory hog, filling the disk, a 2-minute sleep, a thread bomb, network access, writing app files, and `kill(-1)`; `tests/smoke_test.py` repeats the important ones
