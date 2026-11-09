@@ -221,7 +221,7 @@ public class Tracer {
             Process p = new ProcessBuilder(java,
                     "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:" + port,
                     "-cp", classes.toString(), "-Xmx256m", "-Xss32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1",
-                    "-XX:-UsePerfData",
+                    "-XX:-UsePerfData", "-XX:+DisableAttachMechanism",  // nothing may attach to the program's JVM either
                     "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", mainClass)
                     // Input comes straight from the file: writing it to a pipe would block once
                     // the pipe is full, since the program is paused until the debugger connects.

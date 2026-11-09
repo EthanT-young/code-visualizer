@@ -302,7 +302,9 @@ def trace_java(work, code, stdin, uid):
     (work / 'source.txt').write_text(code, encoding='utf-8')
     (work / 'stdin.txt').write_text(stdin, encoding='utf-8')
     hand_over(work, uid)
-    cmd = ['java', '-XX:+UseSerialGC', '-XX:-UsePerfData', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
+    # DisableAttachMechanism: the visitor's program runs as the same user as the Tracer, so
+    # without it the program could attach to the Tracer's JVM and rewrite the trace or its limits.
+    cmd = ['java', '-XX:+UseSerialGC', '-XX:-UsePerfData', '-XX:+DisableAttachMechanism', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
     _, out, err = run_limited(cmd, work, JOB_TIMEOUT, base_env(), uid)
     try:
         return json.loads(out.decode('utf-8'))
