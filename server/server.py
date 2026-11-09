@@ -44,18 +44,15 @@ JOB_TIMEOUT = 25  # seconds; the tracers stop programs themselves after 10 s
 # Each job may create at most this many processes/threads (counted per user, so a
 # fork bomb stops here while the server keeps room under the container's pids limit).
 JOB_NPROC = int(os.environ.get('JOB_NPROC', '300'))
-active_sessions = set()
 busy_uids = set()  # sandbox users lent to a run, from before it starts until it's cleaned up
-sessions_lock = threading.Lock()
-# Inside the container (the Dockerfile sets this) the server owns every process except
-# tini, so it can sweep up processes that escaped their job. Never outside a container.
-IN_CONTAINER = os.environ.get('CODEVIZ_CONTAINER') == '1'
-# In the container the server runs as root (with only a few capabilities) and runs each
-# program as its own unprivileged user, so programs can't signal or tamper with the server
-# or with each other. Each concurrent run borrows one user from this pool; what the user
-# leaves in /tmp is deleted before the next run gets it (clean_up_user).
+busy_lock = threading.Lock()
+# In the container (the Dockerfile sets CODEVIZ_CONTAINER=1) the server runs as root (with
+# only a few capabilities) and runs each program as its own unprivileged user, so programs
+# can't signal or tamper with the server or with each other. Each concurrent run borrows one
+# user from this pool; what the user leaves in /tmp is deleted before the next run gets it
+# (clean_up_user). Outside a container (local development) programs run as the server's user.
 SANDBOX_UIDS = [10001 + i for i in range(MAX_JOBS)]
-SANDBOXED = IN_CONTAINER and os.geteuid() == 0
+SANDBOXED = os.environ.get('CODEVIZ_CONTAINER') == '1'
 job_users = queue.Queue()
 for _uid in SANDBOX_UIDS:
     job_users.put(_uid)
@@ -145,7 +142,10 @@ def proc_session(pid):
 
 def kill_where(should_kill):
     """Kills matching processes. Freezes them with SIGSTOP first and repeats, because a
-    fork bomb refills every slot that a plain kill frees; stopped processes can't fork."""
+    fork bomb refills every slot that a plain kill frees; stopped processes can't fork.
+
+    In the container this is the fallback for kill_as_user, which needs to start a process:
+    when fork bombs fill the container's pids limit, only signals sent from here still work."""
     for _ in range(50):
         found = []
         for name in os.listdir('/proc'):
@@ -193,17 +193,15 @@ def proc_uid(pid):
         return None
 
 
-def sandbox_owned(pid):
-    return not SANDBOXED or proc_uid(pid) in SANDBOX_UIDS
-
-
 def kill_job(sid, uid):
     """Kills everything a job started: its session (gdb runs programs in their own process
     group, but they stay in the session) and, in the container, everything its user owns,
     including processes that left the session with setsid()."""
     if SANDBOXED:
         kill_as_user(uid)
-    kill_where(lambda pid: proc_session(pid) == sid or (SANDBOXED and proc_uid(pid) == uid))
+        kill_where(lambda pid: proc_uid(pid) == uid)
+    else:
+        kill_where(lambda pid: proc_session(pid) == sid)
 
 
 def hand_over(work, uid):
@@ -254,28 +252,13 @@ def clean_up_user(uid):
         sys.stderr.write(f'ipcrm: {e!r}\n')
 
 
-def is_healthcheck(pid):
-    try:
-        with open(f'/proc/{pid}/cmdline', 'rb') as fh:
-            return fh.read().split(b'\0')[:5] == [b'python3', b'-I', b'-B', b'/app/server/server.py', b'--health']
-    except OSError:
-        return False
-
-
 def reap_strays():
-    """Container only: kill anything that isn't the server, a running job, or a healthcheck
-    (e.g. a process that called setsid() to escape its job)."""
-    def stray(pid):
-        if not sandbox_owned(pid) or is_healthcheck(pid):
-            return False
-        with sessions_lock:  # read fresh each time: runs start while kill_where loops
-            return proc_session(pid) not in active_sessions and proc_uid(pid) not in busy_uids
-    kill_where(stray)
-    if SANDBOXED:  # a fork bomb that outlived its run: kill_where alone can lose that race
-        for uid in SANDBOX_UIDS:
-            with sessions_lock:  # held so a new run can't take this user meanwhile
-                if uid not in busy_uids:
-                    kill_as_user(uid)
+    """Container only: kill whatever an idle sandbox user still has running, e.g. a fork
+    bomb that outlived its run because the cleanup after it couldn't start a process."""
+    for uid in SANDBOX_UIDS:
+        with busy_lock:  # held so a new run can't take this user meanwhile
+            if uid not in busy_uids:
+                kill_job(-1, uid)
 
 
 def reaper_loop():
@@ -292,8 +275,6 @@ def run_limited(cmd, cwd, timeout, env, uid):
     drop = {'user': uid, 'group': uid, 'extra_groups': []} if SANDBOXED else {}
     proc = subprocess.Popen(limited(cmd, timeout), cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True, **drop)
-    with sessions_lock:
-        active_sessions.add(proc.pid)  # start_new_session makes the child a session leader
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -305,8 +286,6 @@ def run_limited(cmd, cwd, timeout, env, uid):
         raise TraceError(f'The run took longer than {timeout} seconds and was stopped.')
     finally:
         kill_job(proc.pid, uid)  # the traced JVM, gdb's program, anything they forked
-        with sessions_lock:
-            active_sessions.discard(proc.pid)
     return proc.returncode, out, err
 
 
@@ -323,7 +302,7 @@ def trace_java(work, code, stdin, uid):
     (work / 'source.txt').write_text(code, encoding='utf-8')
     (work / 'stdin.txt').write_text(stdin, encoding='utf-8')
     hand_over(work, uid)
-    cmd = ['java', '-XX:+UseSerialGC', '-XX:-UsePerfData', '-XX:+DisableAttachMechanism', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
+    cmd = ['java', '-XX:+UseSerialGC', '-XX:-UsePerfData', '-Xmx256m', '-XX:TieredStopAtLevel=1', '-cp', str(JAVA_CLASSES), 'Tracer', str(work)]
     _, out, err = run_limited(cmd, work, JOB_TIMEOUT, base_env(), uid)
     try:
         return json.loads(out.decode('utf-8'))
@@ -367,7 +346,7 @@ def trace(language, code, stdin):
     except queue.Empty:
         raise TraceError('The server is busy running other programs. Try again in a few seconds.')
     try:
-        with sessions_lock:
+        with busy_lock:
             busy_uids.add(uid)
         work = JOBS_DIR / uuid.uuid4().hex
         try:
@@ -385,7 +364,7 @@ def trace(language, code, stdin):
                 except Exception as e:  # noqa: BLE001
                     sys.stderr.write(f'cleanup after run: {e!r}\n')
     finally:
-        with sessions_lock:
+        with busy_lock:
             busy_uids.discard(uid)
         job_users.put(uid)
 
@@ -508,6 +487,8 @@ class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
 
 
 def main():
+    if SANDBOXED and os.geteuid() != 0:
+        sys.exit('In the container the server must run as root, to run each program as its own user.')
     if SANDBOXED and MAX_JOBS > 4:
         sys.exit('MAX_JOBS can be at most 4: the image has four sandbox users (10001-10004).')
     listen = os.environ.get('LISTEN', '8080')
@@ -530,7 +511,7 @@ def main():
         server.daemon_threads = True
         where = f'http://localhost:{listen}'
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
-    if IN_CONTAINER:
+    if SANDBOXED:
         threading.Thread(target=reaper_loop, daemon=True).start()
     print(f'Code Visualizer listening on {where}', flush=True)
     if not PASSWORD:

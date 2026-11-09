@@ -221,49 +221,41 @@ public class Tracer {
             Process p = new ProcessBuilder(java,
                     "-agentlib:jdwp=transport=dt_socket,server=n,suspend=y,address=127.0.0.1:" + port,
                     "-cp", classes.toString(), "-Xmx256m", "-Xss32m", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1",
-                    "-XX:-UsePerfData", "-XX:+DisableAttachMechanism",
+                    "-XX:-UsePerfData",
                     "-Dfile.encoding=UTF-8", "-Dstdout.encoding=UTF-8", mainClass)
                     // Input comes straight from the file: writing it to a pipe would block once
                     // the pipe is full, since the program is paused until the debugger connects.
                     .redirectInput(stdinFile())
                     .start();
-            Socket s = null;
-            try {
-                while (p.isAlive()) {
-                    long left = deadline - System.currentTimeMillis();
-                    if (left <= 0) break;
-                    server.setSoTimeout((int) Math.min(left, 1000));
-                    try {
-                        s = server.accept();
-                    } catch (SocketTimeoutException e) {
-                        continue;
-                    }
-                    // The program's JVM connects from 127.0.0.1; anything else isn't it.
-                    boolean fromLoopback = s.getInetAddress().getHostAddress().equals("127.0.0.1");
-                    if (!fromLoopback || !uid.equals(clientUid(s.getPort(), port))) {
-                        s.close();  // another user's process
-                        continue;
-                    }
-                    s.setSoTimeout(5000);
-                    try {
-                        byte[] hello = "JDWP-Handshake".getBytes(StandardCharsets.US_ASCII);
-                        s.getOutputStream().write(hello);  // the debugger greets first, the JVM echoes it
-                        byte[] got = s.getInputStream().readNBytes(hello.length);
-                        if (!Arrays.equals(got, hello)) throw new IOException("bad handshake");
-                        s.setSoTimeout(0);
-                    } catch (IOException e) {
-                        s.close();
-                        continue;
-                    }
-                    process = p;
-                    return Bootstrap.virtualMachineManager().createVirtualMachine(new SocketConnection(s), p);
+            // If launching fails, the server kills the JVM along with the rest of the run.
+            while (p.isAlive()) {
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0) break;
+                server.setSoTimeout((int) Math.min(left, 1000));
+                Socket s;
+                try {
+                    s = server.accept();
+                } catch (SocketTimeoutException e) {
+                    continue;
                 }
-            } catch (Exception | Error e) {
-                if (s != null) s.close();
-                p.destroyForcibly();
-                throw e;
+                if (!uid.equals(clientUid(s.getPort(), port))) {
+                    s.close();  // another user's process, or not from 127.0.0.1
+                    continue;
+                }
+                s.setSoTimeout(5000);
+                try {
+                    byte[] hello = "JDWP-Handshake".getBytes(StandardCharsets.US_ASCII);
+                    s.getOutputStream().write(hello);  // the debugger greets first, the JVM echoes it
+                    byte[] got = s.getInputStream().readNBytes(hello.length);
+                    if (!Arrays.equals(got, hello)) throw new IOException("bad handshake");
+                    s.setSoTimeout(0);
+                } catch (IOException e) {
+                    s.close();
+                    continue;
+                }
+                process = p;
+                return Bootstrap.virtualMachineManager().createVirtualMachine(new SocketConnection(s), p);
             }
-            p.destroyForcibly();
         }
         throw new IllegalStateException("the program didn't connect to the debugger. Run it again");
     }
