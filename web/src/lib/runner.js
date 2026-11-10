@@ -79,6 +79,8 @@ export class Runner {
   }
 
   run({ lang, code, stdin, reset = false }) {
+    // Code copied from web pages can contain non-breaking spaces, which compilers reject.
+    code = code.replaceAll('\u00a0', ' ');
     const id = ++this.runId;
     // A newer run replaces an older one; keep "reset" if any replaced run asked for it.
     this.pending = { id, reset: reset || Boolean(this.pending && this.pending.reset) };
